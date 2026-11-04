@@ -1,0 +1,11 @@
+build*/
+out/
+.vs/
+.vscode/
+CMakeUserPresets.json
+*.exe
+*.dll
+*.obj
+*.o
+*.pdb
+pfcr_rail_log*.csv
