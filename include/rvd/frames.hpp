@@ -4,7 +4,8 @@
 namespace rvd {
 using pfcr::Vec3;
 struct FrameMap {
-  const RailConfig& c;
+  explicit FrameMap(const RailConfig& config) : c(config) { validate(c); }
+  const RailConfig c;
   Vec3 rail_to_hill(const Vec3& rail) const {
     Vec3 h{};
     for (int j = 0; j < 3; ++j) h[j] = c.sign[j] * (rail[c.rail_axis[j]] - c.target_rail[c.rail_axis[j]]) / c.scale[j];

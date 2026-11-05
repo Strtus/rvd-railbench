@@ -14,6 +14,7 @@ struct RailConfig {
 
   double rail_min[3] = {0.0, -0.5, -0.5};     // [m]
   double rail_max[3] = {20.0, 0.5, 0.5};      // [m]
+  double rail_amax[3] = {0.5, 0.2, 0.2};      // [m/s^2], software operating limits
   double rail_vmax[3] = {0.5, 0.2, 0.2};      // [m/s]
 
   double max_measurement_age_s = 0.2;
@@ -22,6 +23,7 @@ struct RailConfig {
   double max_sample_jitter_s = 0.2;
   bool compensate_latency = false;
 
+  double communication_timeout_s = 0.3;
   double max_track_err_rail_m = 0.05;
   double tracking_tol_hill_m = 1.0;
   double ood_warn_z = 6.5;
@@ -29,4 +31,5 @@ struct RailConfig {
 };
 
 
+void validate(const RailConfig& config);
 }  // namespace rvd
