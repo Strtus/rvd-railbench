@@ -1,11 +1,13 @@
 #pragma once
 #include "rvd/time.hpp"
+#include "pfcr/pfcr_controller.hpp"
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <variant>
 #include <vector>
 namespace rvd {
+using pfcr::Vec3;
 enum class Frame { Hill, Rail, MotionCapture, Camera, Lidar1, Lidar2, TargetBody };
 struct StateEstimate {
   Frame frame = Frame::Hill;

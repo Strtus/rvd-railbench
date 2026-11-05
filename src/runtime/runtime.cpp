@@ -4,6 +4,7 @@
 #include "rvd/rail_io.hpp"
 #include "rvd/simulation.hpp"
 #include "rvd/telemetry.hpp"
+#include "rvd/safety.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -13,6 +14,7 @@
 namespace rvd {
 using namespace pfcr;
 int run(const Options& opt, const RailConfig& cfg) {
+  SafetySupervisor safety(cfg);
   FrameMap fm{cfg};
   validate(opt);
   PfcrAdapter ctrl(cfg);
@@ -22,15 +24,23 @@ int run(const Options& opt, const RailConfig& cfg) {
 
   std::unique_ptr<RailIO> io;
   if (opt.lab) throw std::runtime_error("physical hardware is unavailable: drivers and interlocks are not implemented");
-  io = std::make_unique<SimulatedRailIO>(fm.hill_to_rail(opt.start_hill), opt.noise, opt.sim_latency,
-                                              opt.sim_freeze_at);
+  auto simulation = std::make_unique<SimulatedRailIO>(fm.hill_to_rail(opt.start_hill), opt);
+  auto* sim = simulation.get();
+  io = std::move(simulation);
+  struct HoldOnExit { RailIO& io; ~HoldOnExit() { io.hold(); } } hold_guard{*io};
 
-  std::FILE* log = std::fopen(opt.log.c_str(), "w");
+  std::unique_ptr<std::FILE, decltype(&std::fclose)> log_owner(std::fopen(opt.log.c_str(), "w"), &std::fclose);
+  std::FILE* log = log_owner.get();
   if (!log) { std::fprintf(stderr, "cannot open log %s\n", opt.log.c_str()); return 2; }
   write_csv_header(log);
 
   Measurement m0;
-  if (!io->read_measurement(m0)) { std::fprintf(stderr, "initial read_measurement failed\n"); io->hold(); return 3; }
+  if (!safety.communication(io->read_measurement(m0), false) ||
+      !safety.measurement(m0, nullptr, io->now_s(), io->now_s(), nullptr, io->stop_requested())) {
+    std::fprintf(stderr, "initial measurement rejected: %s\n", safety.reason().c_str()); return 3;
+  }
+  safety.transition(RuntimeState::Ready);
+  safety.transition(RuntimeState::Running);
   const Vec3 h0 = fm.rail_to_hill(m0.rail_pos);
   ctrl.reset({Frame::Hill, {h0[0], h0[1], h0[2], 0.0, 0.0, 0.0}, m0.t_acquired});
   std::printf("model %s, policy %s, start hill (%.3f, %.3f, %.3f) m\n", params::kModelId, ctrl.diagnostics().backend.c_str(),
@@ -40,9 +50,10 @@ int run(const Options& opt, const RailConfig& cfg) {
   int ood_warnings = 0, exit_code = 0;
   Vec3 last_target = m0.rail_pos, last_vel{0, 0, 0};
   double prev_acq = kNoStamp;
-  long long prev_frame = m0.frame_id;
+  Measurement previous = m0;
   for (int k = 0;; ++k) {
     const double t_tick = t_start + k * cfg.period_s;
+    if (opt.fast) sim->advance_to(t_tick);
     if (!opt.fast) {
       std::this_thread::sleep_until(io->at(t_tick));
       while (io->now_s() < t_tick) std::this_thread::yield();
@@ -50,26 +61,22 @@ int run(const Options& opt, const RailConfig& cfg) {
     const double t_wake = io->now_s();
     std::string reason;
     bool ok = true;
-    if (io->stop_requested()) { ok = false; reason = "STOP_REQUESTED"; }
+    if (io->stop_requested()) { ok = safety.fault("STOP_REQUESTED"); reason = safety.reason(); }
     else if (opt.max_steps >= 0 && k >= opt.max_steps) { ok = false; reason = "MAX_STEPS"; }
 
     Measurement m;
     m.rail_pos = last_target;
-    if (ok && !io->read_measurement(m)) { ok = false; reason = "READ_FAILED"; m.rail_pos = last_target; }
+    if (ok && !safety.communication(io->read_measurement(m), false)) { ok = false; reason = safety.reason(); m.rail_pos = last_target; }
     const double t_after_read = io->now_s();
 
     const double t_ref = has(m.t_acquired) ? m.t_acquired : (has(m.t_received) ? m.t_received : t_wake);
-    const double age = opt.fast ? kNoStamp : t_tick - t_ref;
+    const double age = t_tick - t_ref;
     const double dt_acq = has(m.t_acquired) && has(prev_acq) ? m.t_acquired - prev_acq : kNoStamp;
-    if (ok && !opt.fast) {
-      if (k > 0 && m.frame_id >= 0 && m.frame_id == prev_frame) { ok = false; reason = "SENSOR_FROZEN"; }
-      else if (k > 0 && has(m.t_acquired) && m.t_acquired == prev_acq) { ok = false; reason = "SENSOR_FROZEN"; }
-      else if (t_ref > t_after_read + cfg.max_clock_skew_s) { ok = false; reason = "STAMP_IN_FUTURE"; }
-      else if (age > cfg.max_measurement_age_s) { ok = false; reason = "STALE_MEASUREMENT"; }
-      else if (-age > cfg.max_measurement_late_s) { ok = false; reason = "MEASUREMENT_LATE"; }
-      if (ok && has(dt_acq) && std::fabs(dt_acq - cfg.period_s) > cfg.max_sample_jitter_s)
-        std::printf("k=%d irregular sampling: %.3f s between acquisitions\n", k, dt_acq);
+    if (ok && !safety.measurement(m, k > 0 ? &previous : nullptr, t_tick, t_after_read, nullptr)) {
+      ok = false; reason = safety.reason();
     }
+    if (ok && has(dt_acq) && std::fabs(dt_acq - cfg.period_s) > cfg.max_sample_jitter_s)
+      std::printf("k=%d irregular sampling: %.3f s between acquisitions\n", k, dt_acq);
     Vec3 meas = m.rail_pos;
     double comp_shift = 0.0;
     if (cfg.compensate_latency && k > 0 && has(m.t_acquired)) {
@@ -81,7 +88,12 @@ int run(const Options& opt, const RailConfig& cfg) {
     const double track_err = k == 0 ? 0.0
         : std::sqrt((meas[0] - last_target[0]) * (meas[0] - last_target[0]) + (meas[1] - last_target[1]) *
                     (meas[1] - last_target[1]) + (meas[2] - last_target[2]) * (meas[2] - last_target[2]));
-    if (ok && track_err > cfg.max_track_err_rail_m) { ok = false; reason = "RAIL_TRACKING_ERROR"; }
+    if (ok) {
+      Measurement compensated = m; compensated.rail_pos = meas;
+      if (!safety.measurement(compensated, nullptr, t_tick, t_after_read, k > 0 ? &last_target : nullptr)) {
+        ok = false; reason = safety.reason();
+      }
+    }
     const Vec3 feed = (opt.open_loop && k > 0) ? last_target : meas;
 
     const double t_ctrl_start = io->now_s();
@@ -90,7 +102,11 @@ int run(const Options& opt, const RailConfig& cfg) {
       const auto h = fm.rail_to_hill(feed);
       ctrl.update({StateEstimate{Frame::Hill, {h[0], h[1], h[2], 0, 0, 0}, m.t_acquired}, {}});
       r = ctrl.last_result();
-      if (r.status != Status::Run) { ok = false; reason = r.reason; }
+      if (!safety.controller_output(r)) { ok = false; reason = safety.reason(); }
+      else if (r.status != Status::Run) {
+        ok = false; reason = r.reason;
+        if (r.status == Status::Abort) safety.fault(reason);
+      }
     } else {
       const Vec3 h = fm.rail_to_hill(feed);
       r.status = Status::Abort;
@@ -106,10 +122,10 @@ int run(const Options& opt, const RailConfig& cfg) {
     cmd.t_tick = t_tick;
     cmd.t_arrive = t_tick + cfg.period_s;
     cmd.rail_target = fm.hill_to_rail({r.next_state[0], r.next_state[1], r.next_state[2]});
-    for (int i = 0; ok && i < 3; ++i) {
+    for (int i = 0; ok && i < 3; ++i)
       cmd.rail_velocity[i] = (cmd.rail_target[i] - feed[i]) / cfg.period_s;
-      if (cmd.rail_target[i] < cfg.rail_min[i] || cmd.rail_target[i] > cfg.rail_max[i]) { ok = false; reason = "RAIL_ENVELOPE"; }
-      else if (std::fabs(cmd.rail_velocity[i]) > cfg.rail_vmax[i]) { ok = false; reason = "RAIL_SPEED"; }
+    if (ok && (!safety.command(cmd, last_vel) || !safety.deadline(t_ctrl_end, cmd.t_arrive))) {
+      ok = false; reason = safety.reason();
     }
     int zi = 0;
     const double z = r.status == Status::Run ? stats.max_abs_z(r.obs, &zi) : 0.0;
@@ -117,7 +133,10 @@ int run(const Options& opt, const RailConfig& cfg) {
       std::printf("k=%d observation %d is %.1f sigma from training\n", k, zi, z);
 
     CommandAck ack;
-    if (ok && !io->send_target(cmd, ack)) { ok = false; reason = "SEND_FAILED"; }
+    if (ok && (!safety.communication(io->send_target(cmd, ack), true) ||
+               !safety.acknowledgment(ack, io->now_s(), cmd.t_arrive, false))) {
+      ok = false; reason = safety.reason();
+    }
     if (!ok) io->hold();
 
     const char* status = ok ? "RUN" : (r.status == Status::Docked ? "DOCKED" : "ABORT");
@@ -132,7 +151,9 @@ int run(const Options& opt, const RailConfig& cfg) {
                   reason.c_str());
     }
     if (!ok) {
-      exit_code = r.status == Status::Docked ? 0 : 1;
+      exit_code = r.status == Status::Docked && safety.state() != RuntimeState::Fault ? 0 : 1;
+      if (safety.state() == RuntimeState::Running) safety.transition(RuntimeState::Hold);
+      safety.transition(RuntimeState::Stopped);
       std::printf("%s: %s at k=%d, distance %.3f m, speed %.3f m/s\n", status, reason.c_str(), k, r.dist, r.speed);
       break;
     }
@@ -140,9 +161,9 @@ int run(const Options& opt, const RailConfig& cfg) {
     last_target = cmd.rail_target;
     last_vel = cmd.rail_velocity;
     prev_acq = m.t_acquired;
-    prev_frame = m.frame_id;
+    previous = m;
   }
-  std::fclose(log);
+  if (std::ferror(log)) throw std::runtime_error("telemetry write failed");
   std::printf("log written to %s (%d observation warnings)\n", opt.log.c_str(), ood_warnings);
   return exit_code;
 }
