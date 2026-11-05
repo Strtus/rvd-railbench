@@ -13,7 +13,7 @@
 
 #include "pfcr/pfcr_controller.hpp"
 
-#ifdef _WIN32
+#if defined(_WIN32) && defined(RVD_WINDOWS_TIMER)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -378,7 +378,7 @@ int main(int argc, char** argv) {
       return a == "--help" ? 0 : 2;
     }
   }
-#ifdef _WIN32
+#if defined(_WIN32) && defined(RVD_WINDOWS_TIMER)
   timeBeginPeriod(1);
 #endif
   int rc = 2;
@@ -387,7 +387,7 @@ int main(int argc, char** argv) {
   } catch (const std::exception& e) {
     std::fprintf(stderr, "fatal: %s\n", e.what());
   }
-#ifdef _WIN32
+#if defined(_WIN32) && defined(RVD_WINDOWS_TIMER)
   timeEndPeriod(1);
 #endif
   return rc;
