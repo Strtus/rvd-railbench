@@ -1,5 +1,6 @@
 #include "rvd/runtime.hpp"
 #include "rvd/frames.hpp"
+#include "rvd/pfcr_adapter.hpp"
 #include "rvd/rail_io.hpp"
 #include "rvd/simulation.hpp"
 #include "rvd/telemetry.hpp"
@@ -13,14 +14,11 @@ namespace rvd {
 using namespace pfcr;
 int run(const Options& opt, const RailConfig& cfg) {
   FrameMap fm{cfg};
-  std::unique_ptr<Policy> policy;
-#ifdef PFCR_WITH_ONNXRUNTIME
-  if (opt.onnx) policy = make_onnx_policy(opt.model_dir + "/pfcr_policy.onnx");
-#endif
-  if (!policy) policy = make_builtin_policy(opt.model_dir + "/pfcr_policy_weights.bin");
+  validate(opt);
+  PfcrAdapter ctrl(cfg);
+  ctrl.initialize({opt.model_dir, opt.onnx});
   ObsStats stats;
-  if (!stats.load(opt.model_dir + "/pfcr_policy_weights.bin")) { std::fprintf(stderr, "cannot load stats\n"); return 2; }
-  Controller ctrl(std::move(policy), cfg.thruster, VelocitySource::Model, cfg.tracking_tol_hill_m);
+  if (!stats.load(opt.model_dir + "/pfcr_policy_weights.bin")) throw std::runtime_error("cannot load stats");
 
   std::unique_ptr<RailIO> io;
   if (opt.lab) throw std::runtime_error("physical hardware is unavailable: drivers and interlocks are not implemented");
@@ -34,8 +32,8 @@ int run(const Options& opt, const RailConfig& cfg) {
   Measurement m0;
   if (!io->read_measurement(m0)) { std::fprintf(stderr, "initial read_measurement failed\n"); io->hold(); return 3; }
   const Vec3 h0 = fm.rail_to_hill(m0.rail_pos);
-  ctrl.reset({h0[0], h0[1], h0[2], 0.0, 0.0, 0.0});
-  std::printf("model %s, policy %s, start hill (%.3f, %.3f, %.3f) m\n", params::kModelId, ctrl.policy().name().c_str(),
+  ctrl.reset({Frame::Hill, {h0[0], h0[1], h0[2], 0.0, 0.0, 0.0}, m0.t_acquired});
+  std::printf("model %s, policy %s, start hill (%.3f, %.3f, %.3f) m\n", params::kModelId, ctrl.diagnostics().backend.c_str(),
               h0[0], h0[1], h0[2]);
 
   const double t_start = io->now_s();
@@ -89,7 +87,9 @@ int run(const Options& opt, const RailConfig& cfg) {
     const double t_ctrl_start = io->now_s();
     StepResult r;
     if (ok) {
-      r = ctrl.step(fm.rail_to_hill(feed));
+      const auto h = fm.rail_to_hill(feed);
+      ctrl.update({StateEstimate{Frame::Hill, {h[0], h[1], h[2], 0, 0, 0}, m.t_acquired}, {}});
+      r = ctrl.last_result();
       if (r.status != Status::Run) { ok = false; reason = r.reason; }
     } else {
       const Vec3 h = fm.rail_to_hill(feed);
