@@ -5,6 +5,7 @@
 #include "rvd/simulation.hpp"
 #include "rvd/telemetry.hpp"
 #include "rvd/safety.hpp"
+#include "rvd/experiment.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -13,7 +14,8 @@
 #include <thread>
 namespace rvd {
 using namespace pfcr;
-int run(const Options& opt, const RailConfig& cfg) {
+int run(const Options& opt) {
+  const auto& cfg = opt.rail;
   SafetySupervisor safety(cfg);
   FrameMap fm{cfg};
   validate(opt);
@@ -22,6 +24,7 @@ int run(const Options& opt, const RailConfig& cfg) {
   ObsStats stats;
   if (!stats.load(opt.model_dir + "/pfcr_policy_weights.bin")) throw std::runtime_error("cannot load stats");
 
+  Experiment experiment(opt);
   std::unique_ptr<RailIO> io;
   if (opt.lab) throw std::runtime_error("physical hardware is unavailable: drivers and interlocks are not implemented");
   auto simulation = std::make_unique<SimulatedRailIO>(fm.hill_to_rail(opt.start_hill), opt);
@@ -29,7 +32,8 @@ int run(const Options& opt, const RailConfig& cfg) {
   io = std::move(simulation);
   struct HoldOnExit { RailIO& io; ~HoldOnExit() { io.hold(); } } hold_guard{*io};
 
-  std::unique_ptr<std::FILE, decltype(&std::fclose)> log_owner(std::fopen(opt.log.c_str(), "w"), &std::fclose);
+  const auto trajectory_path = experiment.directory() / "trajectory.csv";
+  std::unique_ptr<std::FILE, decltype(&std::fclose)> log_owner(std::fopen(trajectory_path.string().c_str(), "w"), &std::fclose);
   std::FILE* log = log_owner.get();
   if (!log) { std::fprintf(stderr, "cannot open log %s\n", opt.log.c_str()); return 2; }
   write_csv_header(log);
@@ -37,17 +41,24 @@ int run(const Options& opt, const RailConfig& cfg) {
   Measurement m0;
   if (!safety.communication(io->read_measurement(m0), false) ||
       !safety.measurement(m0, nullptr, io->now_s(), io->now_s(), nullptr, io->stop_requested())) {
+    experiment.event(io->now_s(), "fault", safety.reason());
+    experiment.finish("FAULT", safety.reason(), 3);
     std::fprintf(stderr, "initial measurement rejected: %s\n", safety.reason().c_str()); return 3;
   }
   safety.transition(RuntimeState::Ready);
+  experiment.event(io->now_s(), "state", "READY");
   safety.transition(RuntimeState::Running);
+  experiment.event(io->now_s(), "state", "RUNNING");
   const Vec3 h0 = fm.rail_to_hill(m0.rail_pos);
-  ctrl.reset({Frame::Hill, {h0[0], h0[1], h0[2], 0.0, 0.0, 0.0}, m0.t_acquired});
+  const StateEstimate initial{Frame::Hill, {h0[0], h0[1], h0[2], 0, 0, 0}, m0.t_acquired};
+  ctrl.reset(initial);
+  experiment.initial(initial);
   std::printf("model %s, policy %s, start hill (%.3f, %.3f, %.3f) m\n", params::kModelId, ctrl.diagnostics().backend.c_str(),
               h0[0], h0[1], h0[2]);
 
   const double t_start = io->now_s();
   int ood_warnings = 0, exit_code = 0;
+  std::string final_outcome, final_reason;
   Vec3 last_target = m0.rail_pos, last_vel{0, 0, 0};
   double prev_acq = kNoStamp;
   Measurement previous = m0;
@@ -102,6 +113,7 @@ int run(const Options& opt, const RailConfig& cfg) {
       const auto h = fm.rail_to_hill(feed);
       ctrl.update({StateEstimate{Frame::Hill, {h[0], h[1], h[2], 0, 0, 0}, m.t_acquired}, {}});
       r = ctrl.last_result();
+      experiment.controller_step(k, h, m.t_acquired, r);
       if (!safety.controller_output(r)) { ok = false; reason = safety.reason(); }
       else if (r.status != Status::Run) {
         ok = false; reason = r.reason;
@@ -152,8 +164,13 @@ int run(const Options& opt, const RailConfig& cfg) {
     }
     if (!ok) {
       exit_code = r.status == Status::Docked && safety.state() != RuntimeState::Fault ? 0 : 1;
+      if (safety.state() == RuntimeState::Fault) experiment.event(io->now_s(), "fault", reason);
       if (safety.state() == RuntimeState::Running) safety.transition(RuntimeState::Hold);
+      experiment.event(io->now_s(), "state", state_name(safety.state()));
+      final_outcome = exit_code == 0 ? "DOCKED" : (reason == "MAX_STEPS" ? "LIMIT_REACHED" : "FAULT");
+      final_reason = reason;
       safety.transition(RuntimeState::Stopped);
+      experiment.event(io->now_s(), "state", "STOPPED");
       std::printf("%s: %s at k=%d, distance %.3f m, speed %.3f m/s\n", status, reason.c_str(), k, r.dist, r.speed);
       break;
     }
@@ -164,7 +181,16 @@ int run(const Options& opt, const RailConfig& cfg) {
     previous = m;
   }
   if (std::ferror(log)) throw std::runtime_error("telemetry write failed");
-  std::printf("log written to %s (%d observation warnings)\n", opt.log.c_str(), ood_warnings);
+  if (std::fclose(log_owner.release()) != 0) throw std::runtime_error("telemetry close failed");
+  // Retain the original --log/default CSV path as a compatibility export.
+  if (std::filesystem::absolute(opt.log) != std::filesystem::absolute(trajectory_path)) {
+    std::ifstream input(trajectory_path, std::ios::binary);
+    std::ofstream output(opt.log, std::ios::binary | std::ios::trunc);
+    output << input.rdbuf();
+    if (!input || !output) throw std::runtime_error("cannot export compatibility CSV: " + opt.log);
+  }
+  experiment.finish(final_outcome, final_reason, exit_code);
+  std::printf("experiment %s; CSV %s (%d observation warnings)\n", experiment.directory().string().c_str(), opt.log.c_str(), ood_warnings);
   return exit_code;
 }
 

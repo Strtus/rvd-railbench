@@ -31,6 +31,6 @@ void load_config(const std::string& path, Options& options);
 void validate(const Options& options);
 std::string configuration_snapshot(const Options& options);
 Options parse_options(int argc, char** argv);
-int run(const Options& opt, const RailConfig& cfg);
+int run(const Options& opt);
 
 }  // namespace rvd

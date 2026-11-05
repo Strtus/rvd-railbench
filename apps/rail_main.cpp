@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
 #endif
   try {
     const auto opt = rvd::parse_options(argc, argv);
-    return rvd::run(opt, opt.rail);
+    return rvd::run(opt);
   } catch (const std::exception& e) {
     if (std::string(e.what()) == "help") return 0;
     std::fprintf(stderr, "fatal: %s\n", e.what());

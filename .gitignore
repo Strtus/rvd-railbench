@@ -9,3 +9,6 @@ CMakeUserPresets.json
 *.o
 *.pdb
 pfcr_rail_log*.csv
+
+experiments/
+*.tmp
