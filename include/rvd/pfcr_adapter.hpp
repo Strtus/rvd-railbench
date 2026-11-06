@@ -1,6 +1,6 @@
 #pragma once
-#include "rvd/controller.hpp"
 #include "rvd/config.hpp"
+#include "rvd/controller.hpp"
 namespace rvd {
 class PfcrAdapter final : public IController {
  public:
@@ -11,10 +11,11 @@ class PfcrAdapter final : public IController {
   ControllerStatus status() const override { return status_; }
   ControllerDiagnostics diagnostics() const override;
   const pfcr::StepResult& last_result() const { return last_; }
+
  private:
   RailConfig config_;
   std::unique_ptr<pfcr::Controller> controller_;
-  ControllerStatus status_=ControllerStatus::Uninitialized;
+  ControllerStatus status_ = ControllerStatus::Uninitialized;
   pfcr::StepResult last_;
 };
 }  // namespace rvd

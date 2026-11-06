@@ -1,9 +1,12 @@
 #pragma once
-#include "rvd/config.hpp"
-#include <string>
 #include <cstdint>
+#include <string>
 #include <vector>
-namespace rvd { std::string find_model_dir(); }
+
+#include "rvd/config.hpp"
+namespace rvd {
+std::string find_model_dir();
+}
 
 namespace rvd {
 using pfcr::Vec3;
@@ -25,7 +28,6 @@ struct Options {
   std::vector<std::string> config_files;
   std::string log = "pfcr_rail_log.csv";
 };
-
 
 void load_config(const std::string& path, Options& options);
 void validate(const Options& options);

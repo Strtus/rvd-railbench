@@ -44,17 +44,33 @@ if(RVD_ENABLE_ONNX)
   target_link_libraries(pfcr_core PUBLIC rvd_onnx)
 endif()
 
-add_library(rvd_runtime src/simulation/rail_simulator.cpp src/core/artifact.cpp src/control/pfcr_adapter.cpp src/runtime/runtime.cpp src/runtime/experiment.cpp src/runtime/replay.cpp src/runtime/safety.cpp src/runtime/config.cpp src/runtime/options.cpp src/runtime/telemetry.cpp)
+add_library(rvd_runtime
+  src/core/artifact.cpp
+  src/control/pfcr_adapter.cpp
+  src/simulation/rail_simulator.cpp
+  src/runtime/runtime.cpp
+  src/runtime/experiment.cpp
+  src/runtime/replay.cpp
+  src/runtime/safety.cpp
+  src/runtime/config.cpp
+  src/runtime/options.cpp
+  src/runtime/telemetry.cpp
+)
 add_library(rvd::runtime ALIAS rvd_runtime)
 find_package(Git QUIET)
 set(RVD_GIT_COMMIT "unknown")
 set(RVD_GIT_DIRTY "unknown")
 if(GIT_FOUND)
   execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    OUTPUT_VARIABLE RVD_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    OUTPUT_VARIABLE _git_commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _git_status)
+  if(_git_status EQUAL 0)
+    set(RVD_GIT_COMMIT "${_git_commit}")
+  endif()
   execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     OUTPUT_VARIABLE _git_changes OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-  if(_git_changes)
+  if(NOT _git_status EQUAL 0)
+    set(RVD_GIT_DIRTY "unknown")
+  elseif(_git_changes)
     set(RVD_GIT_DIRTY "true")
   else()
     set(RVD_GIT_DIRTY "false")
@@ -81,17 +97,6 @@ if(BUILD_TESTING)
     set_tests_properties(golden_onnx PROPERTIES LABELS "regression;onnx" TIMEOUT 120)
   endif()
 endif()
-if(RVD_ENABLE_ONNX AND WIN32)
-  file(GLOB ORT_DLLS "${ONNXRUNTIME_ROOT}/lib/*.dll")
-  foreach(t rail_main rail_replay golden_test)
-    if(TARGET ${t})
-      foreach(dll ${ORT_DLLS})
-        add_custom_command(TARGET ${t} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${dll}" $<TARGET_FILE_DIR:${t}>)
-      endforeach()
-    endif()
-  endforeach()
-endif()
 
 if(BUILD_TESTING)
   function(rvd_test name category source)
@@ -101,13 +106,28 @@ if(BUILD_TESTING)
     add_test(NAME ${name} COMMAND ${name} ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(${name} PROPERTIES LABELS "${category}" TIMEOUT 120)
   endfunction()
-  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  find_package(Python3 3.9 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME protected_inputs COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/protected_inputs_test.py ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(protected_inputs PROPERTIES LABELS "regression" TIMEOUT 30)
   add_test(NAME runtime_integration COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/runtime_test.py
-    $<TARGET_FILE:rail_main> $<TARGET_FILE:rail_replay> ${CMAKE_CURRENT_SOURCE_DIR})
+    $<TARGET_FILE:rail_main> $<TARGET_FILE:rail_replay> ${CMAKE_CURRENT_SOURCE_DIR} ${RVD_ENABLE_ONNX})
   set_tests_properties(runtime_integration PROPERTIES LABELS "integration;faults;regression" TIMEOUT 120)
   rvd_test(safety_time_test faults tests/faults/safety_time_test.cpp)
   rvd_test(simulation_test "unit;faults" tests/faults/simulation_test.cpp)
   rvd_test(controller_artifact_test unit tests/unit/controller_artifact_test.cpp)
   rvd_test(frames_config_test unit tests/unit/frames_config_test.cpp)
+endif()
+
+if(RVD_ENABLE_ONNX AND WIN32)
+  file(GLOB ORT_DLLS "${ONNXRUNTIME_ROOT}/lib/*.dll")
+  foreach(t rail_main rail_replay golden_test safety_time_test simulation_test controller_artifact_test frames_config_test)
+    if(TARGET ${t})
+      foreach(dll ${ORT_DLLS})
+        add_custom_command(TARGET ${t} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${dll}" $<TARGET_FILE_DIR:${t}>)
+      endforeach()
+    endif()
+  endforeach()
 endif()

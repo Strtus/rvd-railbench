@@ -1,5 +1,3 @@
-#include "rvd/runtime.hpp"
-#include "rvd/frames.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -8,6 +6,9 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+
+#include "rvd/frames.hpp"
+#include "rvd/runtime.hpp"
 
 namespace rvd {
 namespace {
@@ -32,7 +33,8 @@ int integer(const std::string& s) {
     throw std::invalid_argument("invalid integer: " + s);
   return static_cast<int>(v);
 }
-template <class T> void triple(const std::string& s, T& a) {
+template <class T>
+void triple(const std::string& s, T& a) {
   std::istringstream in(s);
   std::string cell;
   for (int i = 0; i < 3; ++i) {
@@ -61,7 +63,8 @@ void load_config(const std::string& path, Options& o) {
       if (line.front() == '[' && line.back() == ']') {
         section = line.substr(1, line.size() - 2);
         require(section == "rail" || section == "mapping" || section == "controller" ||
-                section == "simulation" || section == "experiment", "unknown configuration section");
+                    section == "simulation" || section == "experiment",
+                "unknown configuration section");
         continue;
       }
       const auto eq = line.find('=');
@@ -71,54 +74,83 @@ void load_config(const std::string& path, Options& o) {
       require(!val.empty(), "empty configuration value");
       require(seen.insert(key).second, "duplicate configuration key");
       auto& c = o.rail;
-      if (key == "rail.minimum_m") triple(val, c.rail_min);
-      else if (key == "rail.maximum_m") triple(val, c.rail_max);
-      else if (key == "rail.velocity_m_s") triple(val, c.rail_vmax);
-      else if (key == "rail.acceleration_m_s2") triple(val, c.rail_amax);
-      else if (key == "rail.measurement_age_s") c.max_measurement_age_s = number(val);
-      else if (key == "rail.measurement_late_s") c.max_measurement_late_s = number(val);
-      else if (key == "rail.clock_skew_s") c.max_clock_skew_s = number(val);
-      else if (key == "rail.sample_jitter_s") c.max_sample_jitter_s = number(val);
-      else if (key == "rail.communication_timeout_s") c.communication_timeout_s = number(val);
-      else if (key == "rail.tracking_error_m") c.max_track_err_rail_m = number(val);
-      else if (key == "rail.compensate_latency") c.compensate_latency = boolean(val);
+      if (key == "rail.minimum_m")
+        triple(val, c.rail_min);
+      else if (key == "rail.maximum_m")
+        triple(val, c.rail_max);
+      else if (key == "rail.velocity_m_s")
+        triple(val, c.rail_vmax);
+      else if (key == "rail.acceleration_m_s2")
+        triple(val, c.rail_amax);
+      else if (key == "rail.measurement_age_s")
+        c.max_measurement_age_s = number(val);
+      else if (key == "rail.measurement_late_s")
+        c.max_measurement_late_s = number(val);
+      else if (key == "rail.clock_skew_s")
+        c.max_clock_skew_s = number(val);
+      else if (key == "rail.sample_jitter_s")
+        c.max_sample_jitter_s = number(val);
+      else if (key == "rail.communication_timeout_s")
+        c.communication_timeout_s = number(val);
+      else if (key == "rail.tracking_error_m")
+        c.max_track_err_rail_m = number(val);
+      else if (key == "rail.compensate_latency")
+        c.compensate_latency = boolean(val);
       else if (key == "mapping.axis") {
-        Vec3 axes{}; triple(val, axes);
+        Vec3 axes{};
+        triple(val, axes);
         for (int i = 0; i < 3; ++i) {
           require(axes[i] >= 0 && axes[i] <= 2 && axes[i] == std::floor(axes[i]), "axis must be 0, 1 or 2");
           c.rail_axis[i] = static_cast<int>(axes[i]);
         }
-      }
-      else if (key == "mapping.sign") triple(val, c.sign);
-      else if (key == "mapping.scale") triple(val, c.scale);
-      else if (key == "mapping.target_m") triple(val, c.target_rail);
-      else if (key == "controller.type") require(val == "pfcr-dqp", "unsupported controller");
-      else if (key == "controller.model_id") require(val == pfcr::params::kModelId, "incompatible policy artifact");
-      else if (key == "controller.period_s") c.period_s = number(val);
+      } else if (key == "mapping.sign")
+        triple(val, c.sign);
+      else if (key == "mapping.scale")
+        triple(val, c.scale);
+      else if (key == "mapping.target_m")
+        triple(val, c.target_rail);
+      else if (key == "controller.type")
+        require(val == "pfcr-dqp", "unsupported controller");
+      else if (key == "controller.model_id")
+        require(val == pfcr::params::kModelId, "incompatible policy artifact");
+      else if (key == "controller.period_s")
+        c.period_s = number(val);
       else if (key == "controller.backend") {
-        require(val == "builtin" || val == "onnx", "unsupported policy backend"); o.onnx = val == "onnx";
-      }
-      else if (key == "controller.ood_warn_z") c.ood_warn_z = number(val);
+        require(val == "builtin" || val == "onnx", "unsupported policy backend");
+        o.onnx = val == "onnx";
+      } else if (key == "controller.ood_warn_z")
+        c.ood_warn_z = number(val);
       else if (key == "simulation.mode") {
-        require(val == "ideal" || val == "bounded", "unsupported simulation mode"); o.bounded = val == "bounded";
-      }
-      else if (key == "simulation.seed") {
+        require(val == "ideal" || val == "bounded", "unsupported simulation mode");
+        o.bounded = val == "bounded";
+      } else if (key == "simulation.seed") {
         const double v = number(val);
         require(v >= 0 && v <= UINT32_MAX && v == std::floor(v), "seed must be uint32");
         o.seed = static_cast<std::uint32_t>(v);
-      }
-      else if (key == "simulation.noise_m") o.noise = number(val);
-      else if (key == "simulation.latency_s") o.sim_latency = number(val);
-      else if (key == "simulation.bias_m") triple(val, o.sim_bias);
-      else if (key == "simulation.freeze_at") o.sim_freeze_at = integer(val);
-      else if (key == "simulation.fail_read_at") o.sim_fail_read_at = integer(val);
-      else if (key == "simulation.fail_send_at") o.sim_fail_send_at = integer(val);
-      else if (key == "simulation.start_hill_m") triple(val, o.start_hill);
-      else if (key == "simulation.fast") o.fast = boolean(val);
-      else if (key == "simulation.open_loop") o.open_loop = boolean(val);
-      else if (key == "simulation.max_steps") o.max_steps = integer(val);
-      else if (key == "experiment.directory") o.experiment_dir = val;
-      else throw std::invalid_argument("unknown or immutable configuration key: " + key);
+      } else if (key == "simulation.noise_m")
+        o.noise = number(val);
+      else if (key == "simulation.latency_s")
+        o.sim_latency = number(val);
+      else if (key == "simulation.bias_m")
+        triple(val, o.sim_bias);
+      else if (key == "simulation.freeze_at")
+        o.sim_freeze_at = integer(val);
+      else if (key == "simulation.fail_read_at")
+        o.sim_fail_read_at = integer(val);
+      else if (key == "simulation.fail_send_at")
+        o.sim_fail_send_at = integer(val);
+      else if (key == "simulation.start_hill_m")
+        triple(val, o.start_hill);
+      else if (key == "simulation.fast")
+        o.fast = boolean(val);
+      else if (key == "simulation.open_loop")
+        o.open_loop = boolean(val);
+      else if (key == "simulation.max_steps")
+        o.max_steps = integer(val);
+      else if (key == "experiment.directory")
+        o.experiment_dir = val;
+      else
+        throw std::invalid_argument("unknown or immutable configuration key: " + key);
     } catch (const std::exception& e) {
       throw std::invalid_argument(path + ":" + std::to_string(lineno) + ": " + e.what());
     }
@@ -133,13 +165,16 @@ void validate(const RailConfig& c) {
     require(c.rail_axis[i] >= 0 && c.rail_axis[i] < 3 && axes.insert(c.rail_axis[i]).second,
             "mapping axes must be a permutation of 0,1,2");
     require(c.sign[i] == 1 || c.sign[i] == -1, "mapping sign must be +1 or -1");
-    require(std::isfinite(c.scale[i]) && c.scale[i] > 0, "mapping scales must be finite and positive");
+    require(std::isfinite(c.scale[i]) && c.scale[i] > 0 && std::isfinite(1.0 / c.scale[i]),
+            "mapping scales must be finite and positive");
     require(std::isfinite(c.rail_min[i]) && std::isfinite(c.rail_max[i]) && c.rail_min[i] < c.rail_max[i],
             "invalid rail travel limits");
-    require(std::isfinite(c.target_rail[i]) && c.target_rail[i] >= c.rail_min[i] && c.target_rail[i] <= c.rail_max[i],
+    require(std::isfinite(c.target_rail[i]) && c.target_rail[i] >= c.rail_min[i] &&
+                c.target_rail[i] <= c.rail_max[i],
             "mapping target must be inside rail limits");
-    require(std::isfinite(c.rail_vmax[i]) && c.rail_vmax[i] > 0 &&
-            std::isfinite(c.rail_amax[i]) && c.rail_amax[i] > 0, "invalid motion constraints");
+    require(std::isfinite(c.rail_vmax[i]) && c.rail_vmax[i] > 0 && std::isfinite(c.rail_amax[i]) &&
+                c.rail_amax[i] > 0,
+            "invalid motion constraints");
     require(c.thruster.scale[i] == 0.85, "actuator scale is fixed by the compatibility profile");
   }
   require(c.thruster.tau == 2.0 && c.thruster.deadzone == 0.025 && c.tracking_tol_hill_m == 1.0,
@@ -150,7 +185,8 @@ void validate(const RailConfig& c) {
 }
 void validate(const Options& o) {
   validate(o.rail);
-  require(!o.lab, "physical hardware unavailable: drivers, feedback and independent interlocks are unverified");
+  require(!o.lab,
+          "physical hardware unavailable: drivers, feedback and independent interlocks are unverified");
 #ifndef PFCR_WITH_ONNXRUNTIME
   require(!o.onnx, "ONNX requested but this build has no ONNX Runtime");
 #endif
@@ -161,27 +197,39 @@ void validate(const Options& o) {
   const auto start = FrameMap{o.rail}.hill_to_rail(o.start_hill);
   for (int i = 0; i < 3; ++i) {
     require(std::isfinite(o.start_hill[i]) && std::isfinite(o.sim_bias[i]), "nonfinite simulation input");
-    require(start[i] >= o.rail.rail_min[i] && start[i] <= o.rail.rail_max[i], "start outside rail limits");
+    require(std::isfinite(start[i]) && start[i] >= o.rail.rail_min[i] && start[i] <= o.rail.rail_max[i],
+            "start outside rail limits");
   }
 }
 std::string configuration_snapshot(const Options& o) {
-  std::ostringstream s; s << std::setprecision(17) << std::boolalpha;
-  auto triple_out = [&](const char* key, const auto& a) { s << key << " = " << a[0] << ',' << a[1] << ',' << a[2] << '\n'; };
+  std::ostringstream s;
+  s << std::setprecision(17) << std::boolalpha;
+  auto triple_out = [&](const char* key, const auto& a) {
+    s << key << " = " << a[0] << ',' << a[1] << ',' << a[2] << '\n';
+  };
   const auto& c = o.rail;
   s << "[rail]\n";
-  triple_out("minimum_m", c.rail_min); triple_out("maximum_m", c.rail_max);
-  triple_out("velocity_m_s", c.rail_vmax); triple_out("acceleration_m_s2", c.rail_amax);
-  s << "measurement_age_s = " << c.max_measurement_age_s << "\nmeasurement_late_s = " << c.max_measurement_late_s
-    << "\nclock_skew_s = " << c.max_clock_skew_s << "\nsample_jitter_s = " << c.max_sample_jitter_s
-    << "\ncommunication_timeout_s = " << c.communication_timeout_s << "\ntracking_error_m = " << c.max_track_err_rail_m
-    << "\ncompensate_latency = " << c.compensate_latency << "\n[mapping]\n";
-  triple_out("axis", c.rail_axis); triple_out("sign", c.sign); triple_out("scale", c.scale); triple_out("target_m", c.target_rail);
+  triple_out("minimum_m", c.rail_min);
+  triple_out("maximum_m", c.rail_max);
+  triple_out("velocity_m_s", c.rail_vmax);
+  triple_out("acceleration_m_s2", c.rail_amax);
+  s << "measurement_age_s = " << c.max_measurement_age_s
+    << "\nmeasurement_late_s = " << c.max_measurement_late_s << "\nclock_skew_s = " << c.max_clock_skew_s
+    << "\nsample_jitter_s = " << c.max_sample_jitter_s
+    << "\ncommunication_timeout_s = " << c.communication_timeout_s
+    << "\ntracking_error_m = " << c.max_track_err_rail_m << "\ncompensate_latency = " << c.compensate_latency
+    << "\n[mapping]\n";
+  triple_out("axis", c.rail_axis);
+  triple_out("sign", c.sign);
+  triple_out("scale", c.scale);
+  triple_out("target_m", c.target_rail);
   s << "[controller]\ntype = pfcr-dqp\nmodel_id = " << pfcr::params::kModelId << "\nperiod_s = " << c.period_s
     << "\nbackend = " << (o.onnx ? "onnx" : "builtin") << "\nood_warn_z = " << c.ood_warn_z
     << "\n[simulation]\nmode = " << (o.bounded ? "bounded" : "ideal") << "\nseed = " << o.seed
     << "\nnoise_m = " << o.noise << "\nlatency_s = " << o.sim_latency << "\nfreeze_at = " << o.sim_freeze_at
     << "\nfail_read_at = " << o.sim_fail_read_at << "\nfail_send_at = " << o.sim_fail_send_at << '\n';
-  triple_out("bias_m", o.sim_bias); triple_out("start_hill_m", o.start_hill);
+  triple_out("bias_m", o.sim_bias);
+  triple_out("start_hill_m", o.start_hill);
   s << "fast = " << o.fast << "\nopen_loop = " << o.open_loop << "\nmax_steps = " << o.max_steps << '\n';
   return s.str();
 }

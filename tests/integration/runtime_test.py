@@ -9,6 +9,7 @@ import tempfile
 
 rail, replay, root = map(Path, sys.argv[1:4])
 root = root.resolve()
+onnx_enabled = len(sys.argv) > 4 and sys.argv[4] == "ON"
 scratch = Path(tempfile.mkdtemp(prefix="integration-", dir=Path.cwd())).resolve()
 assert scratch.is_relative_to(Path.cwd().resolve())
 model = root / "policies/E_PFCR-DQP_s41_step5120000"
@@ -26,10 +27,31 @@ def run(name, args, rc, reason):
     assert summary["reason"] == reason, (summary, result.stdout, result.stderr)
     assert summary["exit_code"] == rc
     assert json.loads((directory / "metadata.json").read_text())["hardware"] is False
-    assert (directory / "checksums.sha256").exists()
+    checksums = (directory / "checksums.sha256").read_text().splitlines()
+    for line in checksums:
+        digest, name = line.split("  ")
+        assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == digest, name
+    assert any(line.endswith("  summary.json") for line in checksums)
     return directory
 
 first = run("ideal", [], 1, "MAX_STEPS")
+baseline = json.loads((root / "tests/regression/application_baseline.json").read_text())
+with (first / "trajectory.csv").open() as stream:
+    actual = list(csv.DictReader(stream))
+assert len(actual) == len(baseline["rows"])
+for row, reference in zip(actual, baseline["rows"]):
+    for column, expected in zip(baseline["columns"], reference):
+        try:
+            # Baseline CSV was printed to six decimals; cross-platform last-digit differences
+            # are bounded by one printed unit. Strict core Golden tolerances remain unchanged.
+            assert abs(float(row[column]) - float(expected)) <= 1.000001e-6, (column, row[column], expected)
+        except ValueError:
+            assert row[column] == expected, (column, row[column], expected)
+if onnx_enabled:
+    onnx_run = run("onnx", ["--onnx"], 1, "MAX_STEPS")
+    invoke(replay, [onnx_run, model], 0)
+else:
+    invoke(rail, ["--onnx"], 2)
 second = run("ideal-repeat", [], 1, "MAX_STEPS")
 assert (first / "controller.csv").read_bytes() == (second / "controller.csv").read_bytes()
 assert (first / "trajectory.csv").read_bytes() == (second / "trajectory.csv").read_bytes()

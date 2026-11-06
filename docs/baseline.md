@@ -32,3 +32,7 @@ controller itself is platform neutral. ONNX Runtime is optional, located via
 
 Policy binary, ONNX, generated parameter header and all Golden CSV files are
 protected inputs. Preserve their contents, even if their organization changes.
+
+Linux baseline was subsequently reproduced from a separate detached checkout of
+`4670f55` (Ubuntu 24.04 / GCC 13.3, Release, Ninja): the original build and
+`golden_builtin` also pass. The original checkout was not modified.

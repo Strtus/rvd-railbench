@@ -1,6 +1,7 @@
-#include "rvd/runtime.hpp"
 #include <cstdio>
 #include <stdexcept>
+
+#include "rvd/runtime.hpp"
 #if defined(_WIN32) && defined(RVD_WINDOWS_TIMER)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -8,8 +9,10 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+// clang-format off: Windows types must precede the multimedia declarations.
 #include <windows.h>
 #include <timeapi.h>
+// clang-format on
 struct TimerResolution {
   TimerResolution() { timeBeginPeriod(1); }
   ~TimerResolution() { timeEndPeriod(1); }

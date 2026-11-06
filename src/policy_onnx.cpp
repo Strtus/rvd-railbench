@@ -2,10 +2,10 @@
 #ifdef PFCR_WITH_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
 
-#include <stdexcept>
 #include <filesystem>
-#include <vector>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "pfcr/pfcr_controller.hpp"
 
@@ -21,7 +21,8 @@ std::string to_ort_path(const std::string& s) { return s; }
 class OnnxPolicy final : public Policy {
  public:
   explicit OnnxPolicy(const std::string& path)
-      : env_(ORT_LOGGING_LEVEL_WARNING, "pfcr"), session_(nullptr),
+      : env_(ORT_LOGGING_LEVEL_WARNING, "pfcr"),
+        session_(nullptr),
         mem_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)) {
     Ort::SessionOptions opt;
     opt.SetIntraOpNumThreads(1);
@@ -35,9 +36,9 @@ class OnnxPolicy final : public Policy {
     const auto output = output_type.GetTensorTypeAndShapeInfo();
     const auto ins = input.GetShape(), outs = output.GetShape();
     if (input.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-        output.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-        ins.size() != 2 || outs.size() != 2 || (ins[0] != 1 && ins[0] != -1) ||
-        (outs[0] != 1 && outs[0] != -1) || ins[1] != params::kObsDim || outs[1] != 3)
+        output.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT || ins.size() != 2 ||
+        outs.size() != 2 || (ins[0] != 1 && ins[0] != -1) || (outs[0] != 1 && outs[0] != -1) ||
+        ins[1] != params::kObsDim || outs[1] != 3)
       throw std::runtime_error("ONNX dimensions or types do not match PFCR");
     Ort::AllocatorWithDefaultOptions allocator;
     const auto in_name = session_.GetInputNameAllocated(0, allocator);
@@ -49,7 +50,8 @@ class OnnxPolicy final : public Policy {
 
   Action act(const Obs& obs) override {
     const int64_t in_shape[2] = {1, params::kObsDim};
-    Ort::Value input = Ort::Value::CreateTensor<float>(mem_, const_cast<float*>(obs.data()), obs.size(), in_shape, 2);
+    Ort::Value input =
+        Ort::Value::CreateTensor<float>(mem_, const_cast<float*>(obs.data()), obs.size(), in_shape, 2);
     const char* in_names[] = {"obs"};
     const char* out_names[] = {"action"};
     auto out = session_.Run(Ort::RunOptions{nullptr}, in_names, &input, 1, out_names, 1);

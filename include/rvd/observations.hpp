@@ -1,11 +1,12 @@
 #pragma once
-#include "rvd/time.hpp"
-#include "pfcr/pfcr_controller.hpp"
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <variant>
 #include <vector>
+
+#include "pfcr/pfcr_controller.hpp"
+#include "rvd/time.hpp"
 namespace rvd {
 using pfcr::Vec3;
 enum class Frame { Hill, Rail, MotionCapture, Camera, Lidar1, Lidar2, TargetBody };
@@ -17,22 +18,22 @@ struct StateEstimate {
 struct Pose {
   Frame reference = Frame::MotionCapture;
   Vec3 position_m{};
-  std::array<double,4> quaternion_wxyz{1,0,0,0};
+  std::array<double, 4> quaternion_wxyz{1, 0, 0, 0};
   double acquired_s = kNoStamp;
 };
 struct CameraFrame {
   Frame frame = Frame::Camera;
-  int width=0, height=0, stride_bytes=0;
+  int width = 0, height = 0, stride_bytes = 0;
   std::string encoding;
-  double acquired_s=kNoStamp;
+  double acquired_s = kNoStamp;
   std::shared_ptr<const std::vector<std::uint8_t>> pixels;
 };
 struct PointCloud {
   Frame frame = Frame::Lidar1;
-  double acquired_s=kNoStamp;
+  double acquired_s = kNoStamp;
   std::shared_ptr<const std::vector<Vec3>> points_m;
 };
-using SensorObservation = std::variant<Pose,CameraFrame,PointCloud>;
+using SensorObservation = std::variant<Pose, CameraFrame, PointCloud>;
 struct Observation {
   std::optional<StateEstimate> estimate;
   std::vector<SensorObservation> sensors;
