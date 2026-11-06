@@ -29,15 +29,25 @@ Blob read_blob(const std::string& path) {
   f.read(reinterpret_cast<char*>(&B.obs_dim), 4);
   f.read(reinterpret_cast<char*>(&B.act_dim), 4);
   f.read(reinterpret_cast<char*>(&B.n_hidden), 4);
-  if (!f || std::string(magic, 4) != "PFCR" || version != 1) throw std::runtime_error("bad policy weights header");
-  if (B.obs_dim != params::kObsDim || B.act_dim != 3) throw std::runtime_error("policy dimensions do not match");
+  if (!f || std::string(magic, 4) != "PFCR" || version != 1)
+    throw std::runtime_error("bad policy weights header");
+  if (B.obs_dim != params::kObsDim || B.act_dim != 3)
+    throw std::runtime_error("policy dimensions do not match");
+  if (B.n_hidden == 0 || B.n_hidden > 16) throw std::runtime_error("invalid hidden layer count");
   B.sizes.resize(B.n_hidden);
   f.read(reinterpret_cast<char*>(B.sizes.data()), 4 * B.n_hidden);
+  for (auto size : B.sizes)
+    if (size == 0 || size > 4096) throw std::runtime_error("invalid hidden layer width");
   f.read(reinterpret_cast<char*>(&B.clip_obs), 4);
   B.mean.resize(B.obs_dim);
   B.std.resize(B.obs_dim);
   f.read(reinterpret_cast<char*>(B.mean.data()), 8 * B.obs_dim);
   f.read(reinterpret_cast<char*>(B.std.data()), 8 * B.obs_dim);
+  if (!f || !std::isfinite(B.clip_obs) || B.clip_obs <= 0)
+    throw std::runtime_error("invalid observation normalization");
+  for (size_t i = 0; i < B.mean.size(); ++i)
+    if (!std::isfinite(B.mean[i]) || !std::isfinite(B.std[i]) || B.std[i] <= 0)
+      throw std::runtime_error("invalid normalization statistics");
   uint32_t in = B.obs_dim;
   for (uint32_t l = 0; l <= B.n_hidden; ++l) {
     const uint32_t out = l < B.n_hidden ? B.sizes[l] : B.act_dim;
@@ -48,6 +58,13 @@ Blob read_blob(const std::string& path) {
     in = out;
   }
   if (!f) throw std::runtime_error("truncated policy weights: " + path);
+  for (const auto& layer : B.W)
+    for (float v : layer)
+      if (!std::isfinite(v)) throw std::runtime_error("nonfinite policy weight");
+  for (const auto& layer : B.b)
+    for (float v : layer)
+      if (!std::isfinite(v)) throw std::runtime_error("nonfinite policy bias");
+  if (f.peek() != std::char_traits<char>::eof()) throw std::runtime_error("trailing policy data");
   return B;
 }
 
@@ -71,7 +88,8 @@ class BuiltinPolicy final : public Policy {
         const float* w = &B_.W[l][j * in];
         for (size_t i = 0; i < in; ++i) acc += static_cast<double>(w[i]) * static_cast<double>(h[i]);
         acc += static_cast<double>(B_.b[l][j]);
-        y[j] = static_cast<float>(l < B_.n_hidden ? std::tanh(static_cast<double>(static_cast<float>(acc))) : acc);
+        y[j] = static_cast<float>(l < B_.n_hidden ? std::tanh(static_cast<double>(static_cast<float>(acc)))
+                                                  : acc);
       }
       h.swap(y);
     }
@@ -93,7 +111,10 @@ std::unique_ptr<Policy> make_builtin_policy(const std::string& weights_bin_path)
 bool ObsStats::load(const std::string& weights_bin_path) {
   try {
     const Blob B = read_blob(weights_bin_path);
-    for (int i = 0; i < params::kObsDim; ++i) { mean[i] = B.mean[i]; std[i] = B.std[i]; }
+    for (int i = 0; i < params::kObsDim; ++i) {
+      mean[i] = B.mean[i];
+      std[i] = B.std[i];
+    }
     return true;
   } catch (const std::exception&) {
     return false;
@@ -105,7 +126,10 @@ double ObsStats::max_abs_z(const Obs& obs, int* index) const {
   int at = 0;
   for (int i = 0; i < params::kObsDim; ++i) {
     const double z = std::fabs((static_cast<double>(obs[i]) - mean[i]) / std[i]);
-    if (z > worst) { worst = z; at = i; }
+    if (z > worst) {
+      worst = z;
+      at = i;
+    }
   }
   if (index) *index = at;
   return worst;

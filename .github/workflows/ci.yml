@@ -1,0 +1,50 @@
+name: C++ CI
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        preset: [dev, release]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }} --parallel 2
+      - run: ctest --preset ${{ matrix.preset }}
+      - run: cmake --preset minimal
+      - run: cmake --build --preset minimal --parallel 2
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-logs-${{ matrix.os }}-${{ matrix.preset }}
+          path: build/*/Testing/Temporary/
+
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-format-18 clang-tidy-18
+      - run: python3 tools/check_format.py
+      - run: cmake --preset dev -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - run: run-clang-tidy-18 -p build/dev -quiet 'src/(core|control|runtime|simulation)/'
+
+  onnx:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up optional ONNX Runtime 1.20.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.20.1 --repo microsoft/onnxruntime --pattern onnxruntime-linux-x64-1.20.1.tgz --dir "$RUNNER_TEMP"
+          echo "67db4dc1561f1e3fd42e619575c82c601ef89849afc7ea85a003abbac1a1a105  $RUNNER_TEMP/onnxruntime-linux-x64-1.20.1.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/onnxruntime-linux-x64-1.20.1.tgz" -C "$RUNNER_TEMP"
+      - run: cmake -S . -B build/onnx -G Ninja -DCMAKE_BUILD_TYPE=Release -DRVD_ENABLE_ONNX=ON -DONNXRUNTIME_ROOT="$RUNNER_TEMP/onnxruntime-linux-x64-1.20.1"
+      - run: cmake --build build/onnx --parallel 2
+      - run: ctest --test-dir build/onnx --output-on-failure

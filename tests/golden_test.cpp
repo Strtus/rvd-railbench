@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[i]) == "--onnx") onnx = true;
     if (std::string(argv[i]) == "--trace" && i + 1 < argc) trace_run = std::atoi(argv[++i]);
   }
-  const std::string mdir = pkg + "/model/" + params::kModelId;
+  const std::string mdir = pkg + "/policies/" + params::kModelId;
   bool ok = true;
 
   {

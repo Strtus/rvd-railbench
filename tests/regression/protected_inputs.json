@@ -1,0 +1,7 @@
+{
+  "src/pfcr_controller.cpp": "416ab32542a5bd954ff3f6c3efc28320563a4a480b262fdcfc1a85f29ecb44cd",
+  "include/pfcr/pfcr_params.hpp": "d6f780f53dba8d2191ec2e2bab5efd756742a08256c36073fb06594611cff2a6",
+  "golden/policy_cases.csv": "f80c16a518537e7d412fa740649c259bf2996942d73cc42eb26bad401f932c18",
+  "golden/controller_runs.csv": "25db5b6eac302e941b238cf26dfa31b695cddc1ac42d897cbc3ecf9540157f3f",
+  "golden/controller_runs_meta.csv": "34dd2c18d7b8da80379f3eec0b80e7ca7865ce98c060ba39e41fbe283d80e1ca"
+}
