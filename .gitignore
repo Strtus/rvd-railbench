@@ -12,3 +12,8 @@ pfcr_rail_log*.csv
 
 experiments/
 *.tmp
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+profiles/
