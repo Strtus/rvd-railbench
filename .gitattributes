@@ -1,2 +1,3 @@
 *.onnx binary
 *.bin binary
+*.sh text eol=lf
