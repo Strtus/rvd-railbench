@@ -68,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022, macos-14]
+        os: [ubuntu-24.04, windows-2022, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -106,9 +106,13 @@ jobs:
       - run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "$GITHUB_REF_NAME" dist/*
-          --repo "$GITHUB_REPOSITORY" --title "RVD-RailBench ${GITHUB_REF_NAME#v}" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+              --title "RVD-RailBench ${GITHUB_REF_NAME#v}" --generate-notes
+          fi
 
   # Runs once PyPI trusts this workflow (pending publisher: rvd-railbench, environment pypi) and the
   # repository variable PYPI_PUBLISH is set to true.
