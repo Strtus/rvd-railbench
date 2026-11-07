@@ -1,0 +1,411 @@
+* {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-background: #0b0b0b;
+    scrollbar-color: #3a3a3a;
+    scrollbar-color-hover: #5a5a5a;
+    scrollbar-color-active: #7a7a7a;
+}
+
+Screen {
+    background: #0b0b0b;
+    color: #d6d6d6;
+}
+
+/* splash */
+
+HomeScreen {
+    align: center middle;
+}
+
+#splash {
+    width: 52;
+    height: auto;
+}
+
+#logo {
+    height: 6;
+}
+
+#subtitle {
+    height: 1;
+    margin-top: 1;
+    color: #d6d6d6;
+}
+
+#version {
+    height: 1;
+    color: #8a8a8a;
+}
+
+#status {
+    height: auto;
+    margin-top: 2;
+}
+
+#menu {
+    height: 6;
+    margin-top: 2;
+}
+
+#prompt-row {
+    height: 1;
+    margin-top: 2;
+}
+
+#prompt {
+    width: 2;
+    color: #ffffff;
+    text-style: bold;
+}
+
+#command,
+#command:focus {
+    width: 1fr;
+    background: #0b0b0b;
+    background-tint: #000000 0%;
+    color: #ffffff;
+}
+
+#message {
+    height: 1;
+    margin-top: 1;
+}
+
+/* pages */
+
+.title-bar {
+    height: 1;
+    background: #1a1a1a;
+}
+
+.title-left {
+    width: 1fr;
+    padding: 0 1;
+    color: #ffffff;
+    text-style: bold;
+}
+
+.title-right {
+    width: auto;
+    padding: 0 1;
+    color: #8a8a8a;
+}
+
+.body {
+    padding: 1 2;
+}
+
+.context {
+    height: auto;
+    padding: 0 2;
+    color: #8a8a8a;
+}
+
+.notice {
+    margin-bottom: 1;
+}
+
+.section-title {
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+Input {
+    background: #161616;
+    color: #e6e6e6;
+}
+
+Input:focus {
+    background: #242424;
+}
+
+Input:disabled {
+    color: #5a5a5a;
+}
+
+Input > .input--placeholder {
+    color: #555555;
+}
+
+Input > .input--cursor {
+    background: #e6e6e6;
+    color: #0b0b0b;
+}
+
+Button {
+    min-width: 8;
+    margin-right: 1;
+    background: #262626;
+    color: #e6e6e6;
+}
+
+Button:hover {
+    background: #3a3a3a;
+}
+
+Button:focus {
+    background: #e6e6e6;
+    color: #0b0b0b;
+    text-style: bold;
+}
+
+Button:disabled {
+    background: #141414;
+    color: #4a4a4a;
+}
+
+.button-row {
+    height: 1;
+    margin-top: 1;
+}
+
+.form-title {
+    color: #e6e6e6;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.form-row {
+    height: 1;
+    margin-bottom: 1;
+}
+
+.form-key {
+    width: 2;
+    color: #8a8a8a;
+}
+
+.form-key.wide {
+    width: 11;
+}
+
+.form-key.mid {
+    width: 6;
+}
+
+.form-key.gap {
+    margin-left: 1;
+}
+
+Input.num {
+    width: 1fr;
+    margin-right: 1;
+}
+
+Select {
+    width: 1fr;
+}
+
+.spark-label {
+    height: 1;
+    margin-top: 1;
+    color: #8a8a8a;
+}
+
+Sparkline {
+    height: 3;
+}
+
+Sparkline > .sparkline--max-color {
+    color: #f0f0f0;
+}
+
+Sparkline > .sparkline--min-color {
+    color: #4a4a4a;
+}
+
+Footer {
+    background: #141414;
+}
+
+/* motion control */
+
+.vec-row {
+    height: 1;
+    margin-bottom: 1;
+}
+
+.vec-label {
+    width: 10;
+    color: #8a8a8a;
+}
+
+.vec-input {
+    width: 14;
+    margin-right: 2;
+}
+
+.envelope {
+    height: auto;
+    margin: 0 0 0 10;
+}
+
+/* autonomous rendezvous */
+
+#run-body {
+    height: 1fr;
+}
+
+#run-side {
+    width: 46;
+    padding: 1 2;
+}
+
+#plots {
+    width: 1fr;
+    padding: 1 2 0 0;
+}
+
+#plots PlotView {
+    margin-bottom: 1;
+}
+
+#run-status {
+    height: auto;
+    margin-top: 1;
+}
+
+#run-log {
+    height: 8;
+    padding: 0 1;
+    background: #0e0e0e;
+    color: #8a8a8a;
+    border-top: solid #2a2a2a;
+}
+
+/* sensor & telemetry */
+
+#source-row {
+    height: 1;
+    margin: 1 2 0 2;
+}
+
+#source {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#sensors-body {
+    height: 1fr;
+}
+
+#summary-pane {
+    width: 1fr;
+    padding: 1 2;
+}
+
+#spark-pane {
+    width: 52;
+    padding: 0 2;
+}
+
+/* experiment manager */
+
+#experiments {
+    height: 1fr;
+    margin: 1 2;
+    background: #0b0b0b;
+}
+
+DataTable > .datatable--header {
+    background: #161616;
+    color: #e6e6e6;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #d6d6d6;
+    color: #0b0b0b;
+}
+
+DataTable > .datatable--hover {
+    background: #1f1f1f;
+}
+
+#manager-status {
+    margin-bottom: 1;
+}
+
+TextModal {
+    align: center middle;
+    background: #000000 60%;
+}
+
+#modal {
+    width: 80%;
+    height: 80%;
+    padding: 1 2;
+    background: #121212;
+    border: solid #3a3a3a;
+}
+
+/* rail setup */
+
+.setup-row {
+    height: 1;
+    margin-bottom: 1;
+}
+
+.setup-key {
+    width: 26;
+    color: #8a8a8a;
+}
+
+.setup-header {
+    height: 1;
+    margin-bottom: 1;
+    color: #8a8a8a;
+}
+
+.setup-load-key {
+    width: 6;
+    margin-left: 3;
+    color: #8a8a8a;
+}
+
+#profile-name {
+    width: 24;
+}
+
+#profile-load {
+    width: 36;
+}
+
+.cell {
+    width: 14;
+    margin-right: 1;
+}
+
+.cell.wide {
+    width: 24;
+}
+
+.cell.short {
+    width: 9;
+}
+
+.axis-select {
+    width: 9;
+    margin-right: 1;
+}
+
+.sign-select {
+    width: 8;
+    margin-right: 1;
+}
+
+.setup-axis {
+    width: 2;
+    color: #8a8a8a;
+}
+
+.setup-axis.wide {
+    width: 12;
+    margin-left: 2;
+}
+
+.setup-result {
+    height: auto;
+    margin-top: 1;
+}
