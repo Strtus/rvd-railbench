@@ -1,4 +1,7 @@
-"""Read-only view of the checkout: version, build, git, policy artifact and device status."""
+"""Read-only view of the installation: version, build, git, policy artifact and device status.
+
+Two layouts are supported: a source checkout (CMakeLists.txt, build/<preset>/rail_main) and the runtime bundled
+in the Python wheel (rvdlab/runtime with runtime.json, bin/rail_main, configs/, policies/)."""
 
 from __future__ import annotations
 
@@ -14,7 +17,8 @@ from .config import DEFAULT_FILES, ConfigError, Profile, load_profile
 from .profiles import profile_path, read_active
 
 EXE = ".exe" if os.name == "nt" else ""
-BUILD_DIRS = ("build/release", "build/release/Release", "build/dev", "build/minimal")
+BUILD_DIRS = ("bin", "build/release", "build/release/Release", "build/dev", "build/minimal")
+RUNTIME_MARKER = "runtime.json"
 _CACHE_KEYS = {
     "RVD_SIMULATION_ONLY",
     "RVD_ENABLE_ONNX",
@@ -28,24 +32,56 @@ class ProjectError(RuntimeError):
     pass
 
 
+def _runtime(path: Path) -> dict:
+    try:
+        return json.loads((path / RUNTIME_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def is_bundled(root: Path) -> bool:
+    return _runtime(root).get("project") == "rvd_railbench"
+
+
+def bundled_runtime() -> Path | None:
+    path = Path(__file__).resolve().parent / "runtime"
+    return path if is_bundled(path) else None
+
+
 def _is_root(path: Path) -> bool:
+    if is_bundled(path):
+        return True
     cmake = path / "CMakeLists.txt"
     return cmake.is_file() and "project(rvd_railbench" in cmake.read_text(encoding="utf-8", errors="replace")
 
 
 def find_root(start: Path | None = None) -> Path:
-    bases = [Path(start).resolve()] if start else [Path.cwd().resolve(), Path(__file__).resolve().parent]
+    """--root, else the runtime bundled in an installed wheel, else a checkout around the working directory
+    or this package (editable installs)."""
+    if start:
+        bases = [Path(start).resolve()]
+    else:
+        runtime = bundled_runtime()
+        if runtime is not None:
+            return runtime
+        bases = [Path.cwd().resolve(), Path(__file__).resolve().parent]
     for base in bases:
         for path in (base, *base.parents):
             if _is_root(path):
                 return path
-    raise ProjectError("RVD-RailBench checkout not found; pass --root")
+    raise ProjectError("RVD-RailBench installation not found; pass --root")
 
 
 def read_version(root: Path) -> str:
+    if is_bundled(root):
+        return str(_runtime(root).get("version", "unknown"))
     text = (root / "CMakeLists.txt").read_text(encoding="utf-8", errors="replace")
     match = re.search(r"project\(\s*rvd_railbench\s+VERSION\s+([0-9][0-9.]*)", text)
     return match.group(1) if match else "unknown"
+
+
+def user_data_dir() -> Path:
+    return Path(os.environ.get("RVDLAB_HOME") or Path.home() / ".rvdlab")
 
 
 def _on(value: str | None) -> bool:
@@ -92,9 +128,23 @@ def find_build(root: Path) -> Build:
         rail_main = directory / f"rail_main{EXE}"
         if rail_main.is_file():
             replay = directory / f"rail_replay{EXE}"
-            return Build(directory, rail_main, replay if replay.is_file() else None,
-                         read_cache(directory / "CMakeCache.txt"))
+            cache = read_cache(directory / "CMakeCache.txt")
+            if not cache and is_bundled(root):
+                runtime = _runtime(root)
+                cache = {"RVD_SIMULATION_ONLY": "ON" if runtime.get("simulation_only", True) else "OFF",
+                         "CMAKE_BUILD_TYPE": str(runtime.get("build_type", "")), "RVD_ENABLE_ONNX": "OFF"}
+            return Build(directory, rail_main, replay if replay.is_file() else None, cache)
     return Build()
+
+
+def probe_simulator(build: Build) -> bool:
+    """True when rail_main starts on this machine (it prints its usage and exits 0)."""
+    if build.rail_main is None:
+        return False
+    try:
+        return subprocess.run([str(build.rail_main), "--help"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 @dataclass
@@ -209,7 +259,11 @@ def load_project(root: Path | None = None, configs: list[Path] | None = None,
         profiles = Path(os.environ["RVDLAB_PROFILES"])
     if experiments is None and os.environ.get("RVDLAB_EXPERIMENTS"):
         experiments = Path(os.environ["RVDLAB_EXPERIMENTS"])
-    profiles_dir = (profiles or base / "profiles").resolve()
+    # An installed wheel keeps user data outside site-packages; a checkout keeps it beside the sources.
+    data = user_data_dir() if is_bundled(base) else base
+    profiles = profiles or data / "profiles"
+    experiments = experiments or data / "experiments"
+    profiles_dir = profiles.resolve()
     files, rail_profile = config_files(base, profiles_dir, configs)
     try:
         profile, error = load_profile(base, files), None
@@ -222,7 +276,7 @@ def load_project(root: Path | None = None, configs: list[Path] | None = None,
         git=read_git(base),
         policy=read_policy(base, profile.controller.model_id),
         profile=profile,
-        experiments_dir=(experiments or base / "experiments").resolve(),
+        experiments_dir=experiments.resolve(),
         profiles_dir=profiles_dir,
         rail_profile=rail_profile,
         explicit_configs=bool(configs),
