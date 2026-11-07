@@ -35,7 +35,9 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          stage="$RUNNER_TEMP/rvd-railbench"
+          temp="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = "Windows" ]; then temp="$(cygpath -u "$RUNNER_TEMP")"; fi
+          stage="$temp/rvd-railbench"
           mkdir -p "$stage"
           git archive --format=tar HEAD | tar -x -C "$stage"
           mkdir -p "$stage/build/release"
@@ -43,7 +45,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
           cp "build/release/rail_main$ext" "build/release/rail_replay$ext" "$stage/build/release/"
           "$stage/build/release/rail_main$ext" --help > /dev/null
-          cd "$RUNNER_TEMP"
+          cd "$temp"
           if [ "$RUNNER_OS" = "Windows" ]; then
             7z a -tzip "${{ matrix.asset }}" rvd-railbench > /dev/null
           else
