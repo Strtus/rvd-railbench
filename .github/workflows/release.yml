@@ -3,7 +3,14 @@ on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [".github/workflows/release.yml", "install.sh", "install.ps1"]
+    paths:
+      - ".github/workflows/release.yml"
+      - "install.sh"
+      - "install.ps1"
+      - "pyproject.toml"
+      - "CMakeLists.txt"
+      - "tui/runtime.json.in"
+      - "tui/rvdlab/**"
   workflow_dispatch:
 permissions:
   contents: write
@@ -57,9 +64,39 @@ jobs:
           path: ${{ runner.temp }}/${{ matrix.asset }}
           if-no-files-found: error
 
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cibuildwheel
+      - run: python -m cibuildwheel --output-dir wheelhouse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
+    needs: [package, wheels, sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -69,6 +106,27 @@ jobs:
       - run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "$GITHUB_REF_NAME" dist/*
-          --repo "$GITHUB_REPOSITORY" --title "RVD-RailBench ${GITHUB_REF_NAME#v}" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+              --title "RVD-RailBench ${GITHUB_REF_NAME#v}" --generate-notes
+          fi
+
+  # Runs once PyPI trusts this workflow (pending publisher: rvd-railbench, environment pypi) and the
+  # repository variable PYPI_PUBLISH is set to true.
+  pypi:
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PYPI_PUBLISH == 'true'
+    needs: [wheels, sdist]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

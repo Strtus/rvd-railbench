@@ -1,0 +1,7 @@
+{
+  "project": "rvd_railbench",
+  "version": "@PROJECT_VERSION@",
+  "simulation_only": @RVD_RUNTIME_SIMULATION_ONLY@,
+  "build_type": "@RVD_RUNTIME_BUILD_TYPE@",
+  "compiler": "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@"
+}

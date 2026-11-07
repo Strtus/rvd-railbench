@@ -14,7 +14,7 @@ from textual.widgets import Footer, Static
 from .. import __version__
 from ..config import RailConfig
 from ..experiments import list_experiments
-from ..project import system_status
+from ..project import is_bundled, system_status
 from .base import DIM, Page, kv_table, section
 
 HILL_AXES = ("x  radial / docking axis", "y  along-track", "z  cross-track")
@@ -67,7 +67,7 @@ class OverviewScreen(Page):
         software = kv_table([
             ("Project", f"RVD-RailBench {p.version}", p.root.as_posix()),
             ("Source", f"{git.branch} @ {git.commit}{dirty}" if git.commit else "not a git checkout", ""),
-            ("Build", p.relative(build.directory) or "not built",
+            ("Build", ("bundled runtime · " if is_bundled(p.root) else "") + (p.relative(build.directory) or "not built"),
              f"{build.build_type}, RVD_SIMULATION_ONLY={build.cache.get('RVD_SIMULATION_ONLY', '?')}"
              if build.directory else "cmake --preset release && cmake --build --preset release"),
             ("Executables", ", ".join(n for n, f in (("rail_main", build.rail_main), ("rail_replay", build.rail_replay)) if f) or "none", ""),
