@@ -54,10 +54,53 @@ int main(int argc, char** argv) {
   rvd::Options roundtrip;
   rvd::load_config(temp.string(), roundtrip);
   CHECK(rvd::configuration_snapshot(o) == rvd::configuration_snapshot(roundtrip));
+  rvd::Options lead = o;
+  {
+    std::ofstream f(temp);
+    f << "[rail]\n"
+         "command_mode = lead\n"
+         "lead_s = 0.4\n"
+         "tracking_gain_per_s = 0.8\n"
+         "sensor_disagreement_m = 0.02\n"
+         "[simulation]\n"
+         "mode = plc\n"
+         "plc_acceleration_m_s2 = 0.1,0.2,0.3\n"
+         "plc_delay_s = 0.05\n"
+         "repeat_pose_at = 7\n"
+         "encoder = false\n";
+  }
+  rvd::load_config(temp.string(), lead);
+  rvd::validate(lead);
+  CHECK(lead.rail.command_mode == rvd::CommandMode::Lead && lead.rail.lead_s == .4 &&
+        lead.rail.tracking_gain_per_s == .8 && lead.rail.max_sensor_disagreement_m == .02);
+  CHECK(lead.plc && lead.bounded && lead.plc_accel[2] == .3 && lead.plc_delay == .05 &&
+        lead.sim_repeat_pose_at == 7 && !lead.sim_encoder);
+  {
+    std::ofstream f(temp);
+    f << rvd::configuration_snapshot(lead);
+  }
+  rvd::Options lead_roundtrip;
+  rvd::load_config(temp.string(), lead_roundtrip);
+  CHECK(rvd::configuration_snapshot(lead) == rvd::configuration_snapshot(lead_roundtrip));
+  lead.rail.tracking_gain_per_s = 1.5;
+  rejects([&] { rvd::validate(lead); });
+  lead.rail.tracking_gain_per_s = .8;
+  lead.rail.lead_s = 0;
+  rejects([&] { rvd::validate(lead); });
+  lead.rail.lead_s = .4;
+  lead.plc_delay = 1;
+  rejects([&] { rvd::validate(lead); });
+  lead.plc_delay = .05;
+  lead.bounded = false;
+  rejects([&] { rvd::validate(lead); });
+  lead.plc = false;
+  lead.sim_trace = "trace.csv";
+  rejects([&] { rvd::validate(lead); });
   for (const auto* text :
        {"[rail]\nvelocity_m_s = 1,2\n", "[rail]\ntracking_error_m = nan\n", "[rail]\nunknown = 1\n",
         "[rail]\ntracking_error_m = 1\ntracking_error_m = 2\n", "[mapping]\naxis = 0,1,0.5\n",
-        "[simulation]\nseed = -1\n", "[invalid]\nx = 1\n"}) {
+        "[simulation]\nseed = -1\n", "[invalid]\nx = 1\n", "[rail]\ncommand_mode = fast\n",
+        "[simulation]\nmode = turbo\n", "[simulation]\nencoder = 1\n"}) {
     {
       std::ofstream f(temp);
       f << text;

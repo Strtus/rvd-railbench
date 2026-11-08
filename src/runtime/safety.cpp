@@ -73,6 +73,20 @@ bool SafetySupervisor::measurement(const Measurement& m, const Measurement* prev
   }
   const auto stamp = validate_timestamps(m, previous, tick, now, config_);
   if (!stamp.empty()) return fault(stamp);
+  if (has(m.encoder_pos[0]) && has(m.encoder_pos[1]) && has(m.encoder_pos[2])) {
+    double gap = 0, moved = 0;
+    if (previous && m.rail_pos == previous->rail_pos && has(previous->encoder_pos[0]) &&
+        has(previous->encoder_pos[1]) && has(previous->encoder_pos[2])) {
+      for (int i = 0; i < 3; ++i)
+        moved +=
+            (m.encoder_pos[i] - previous->encoder_pos[i]) * (m.encoder_pos[i] - previous->encoder_pos[i]);
+      // A live tracker never reports a bit-identical pose while the axes move.
+      if (std::sqrt(moved) > 5e-4) return fault("MEASUREMENT_REPEATED");
+    }
+    for (int i = 0; i < 3; ++i)
+      gap += (m.rail_pos[i] - m.encoder_pos[i]) * (m.rail_pos[i] - m.encoder_pos[i]);
+    if (std::sqrt(gap) > config_.max_sensor_disagreement_m) return fault("SENSOR_DISAGREEMENT");
+  }
   if (target) {
     double err = 0;
     for (int i = 0; i < 3; ++i) {
@@ -90,7 +104,9 @@ bool SafetySupervisor::command(const Command& c, const Vec3& previous_velocity) 
   for (int i = 0; i < 3; ++i) {
     if (!has(c.rail_target[i]) || !has(c.rail_velocity[i]) || !has(previous_velocity[i]))
       return fault("INVALID_COMMAND");
-    if (c.rail_target[i] < config_.rail_min[i] || c.rail_target[i] > config_.rail_max[i])
+    if (c.rail_target[i] < config_.rail_min[i] || c.rail_target[i] > config_.rail_max[i] ||
+        (has(c.rail_reference[i]) &&
+         (c.rail_reference[i] < config_.rail_min[i] || c.rail_reference[i] > config_.rail_max[i])))
       return fault("RAIL_ENVELOPE");
     if (std::fabs(c.rail_velocity[i]) > config_.rail_vmax[i]) return fault("RAIL_SPEED");
     if (std::fabs(c.rail_velocity[i] - previous_velocity[i]) / config_.period_s > config_.rail_amax[i])

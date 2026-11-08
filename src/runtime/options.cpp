@@ -53,8 +53,20 @@ Options parse_options(int argc, char** argv) {
       opt.open_loop = true;
     else if (a == "--fast")
       opt.fast = true;
-    else if (a == "--bounded")
+    else if (a == "--bounded") {
       opt.bounded = true;
+      opt.plc = false;
+    } else if (a == "--plc")
+      opt.bounded = opt.plc = true;
+    else if (a == "--command-mode") {
+      const auto mode = next(i);
+      if (mode != "arrive" && mode != "lead")
+        throw std::invalid_argument("command mode must be arrive or lead");
+      opt.rail.command_mode = mode == "lead" ? CommandMode::Lead : CommandMode::Arrive;
+    } else if (a == "--sim-trace")
+      opt.sim_trace = next(i);
+    else if (a == "--sim-repeat-pose-at")
+      opt.sim_repeat_pose_at = integer(i);
     else if (a == "--model-dir")
       opt.model_dir = next(i);
     else if (a == "--log")
@@ -81,10 +93,11 @@ Options parse_options(int argc, char** argv) {
       for (int j = 0; j < 3; ++j) opt.start_hill[j] = number(i);
     } else if (a == "--help") {
       std::puts(
-          "usage: rail_main [--config FILE]... [--onnx] [--lab] [--open-loop] [--fast] [--bounded]\n"
-          "  [--max-steps N] [--model-dir DIR] [--log FILE] [--experiment-dir NEW_DIR]\n"
-          "  [--noise M] [--start X Y Z] [--sim-latency S] [--sim-freeze-at K]\n"
-          "  [--sim-fail-read-at K] [--sim-fail-send-at K] [--seed UINT32]");
+          "usage: rail_main [--config FILE]... [--onnx] [--lab] [--open-loop] [--fast] [--bounded | --plc]\n"
+          "  [--command-mode arrive|lead] [--max-steps N] [--model-dir DIR] [--log FILE]\n"
+          "  [--experiment-dir NEW_DIR] [--noise M] [--start X Y Z] [--sim-latency S] [--sim-freeze-at K]\n"
+          "  [--sim-repeat-pose-at K] [--sim-fail-read-at K] [--sim-fail-send-at K] [--seed UINT32]\n"
+          "  [--sim-trace FILE]");
       throw std::invalid_argument("help");
     } else
       throw std::invalid_argument("unknown argument: " + a);

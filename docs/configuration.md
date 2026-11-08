@@ -29,6 +29,18 @@ CWH/CBF/backup constants, 36-to-3 policy, history and original app actuator
 profile (tau=2 s, scale=.85 per axis, deadzone=.025 N, controller tracking
 tolerance=1 m) cannot be changed through these files.
 
+`rail.command_mode` selects how the rail is commanded. `arrive` (default, the
+original behavior) sends each period a segment that ends at the next controller
+state, re-anchored to the measurement. `lead` integrates the reference from the
+realized force without re-anchoring, sends the reference speed plus
+`tracking_gain_per_s` times the reference error, and places the target `lead_s`
+beyond the period as a stop point. The correction only uses the remaining speed
+and acceleration headroom. The error uses encoder feedback when a measurement
+reports it, otherwise the motion-capture position. Tracking supervision
+compares motion capture with the reference in both modes.
+`sensor_disagreement_m` bounds motion capture against encoders when both exist;
+a bit-identical motion-capture pose while the encoders move is a fault.
+
 ## Frames
 
 Hill coordinates are radial x (docking port on +x), along-track y, cross-track z.
@@ -55,6 +67,15 @@ integration steps, including bounded braking on hold. Arrival is not guaranteed
 for infeasible commands; tracking supervision detects missed targets. The
 original teleport model remains the default `ideal` compatibility mode.
 
+`--plc` (or `simulation.mode = plc`) models positioning drives: each command
+takes effect after `plc_delay_s`, the axis moves at the commanded speed
+magnitude (capped by the rail speed) with `plc_acceleration_m_s2`, decelerates
+to rest at the target and waits there, and a new target while moving is
+followed without stopping. `--sim-trace FILE` records plant position, velocity,
+target and speed every 10 ms in bounded and PLC modes. The simulator reports
+encoder positions unless `encoder = false`; `repeat_pose_at` makes motion
+capture repeat its last pose with fresh stamps and frame numbers.
+
 `--fast` uses a deterministic virtual monotonic clock; it now exercises freshness
 and frozen-frame checks too. Ordinary execution uses `steady_clock` and sleeps
 to absolute deadlines. Measurement noise, latency, constant sensor bias,
@@ -77,7 +98,9 @@ Every run creates a new `experiments/<UTC-id>/` directory, or the exact fresh
 - `metadata.json`: controller/model identity, artifact SHA-256, backend, compiler,
   build commit/dirty state, UTC creation time, seed and clock mode.
 - `configuration.ini`: resolved runtime configuration, including simulation seed.
-- `trajectory.csv`: original CSV column order and six-decimal presentation.
+- `trajectory.csv`: original CSV column order and six-decimal presentation,
+  followed by the commanded reference (`rx,ry,rz`) and encoder feedback
+  (`enc_x,enc_y,enc_z,t_encoder`, empty when not reported).
 - `initial_state.csv` and `controller.csv`: full-precision initial state and
   actual controller inputs, expected outputs, termination and safety flags.
 - `events.jsonl`: lifecycle transitions, safety interventions, faults and outcome.

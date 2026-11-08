@@ -32,6 +32,12 @@ silently treated as host time. `t_acquired` is capture time; `t_received` is
 host receipt; control start/end surround controller execution; `t_sent` is
 command transmission; `t_plc_ack` is device acknowledgment mapped to host time.
 NaN means missing. Unknown synchronization or excessive uncertainty is rejected.
+`Measurement::encoder_pos` carries the axis encoders in rail metres, read at
+`t_encoder`; leave it NaN when encoders are not read. `Command::rail_reference`
+is where the rail should be at `t_arrive`. In `arrive` mode it equals
+`rail_target`; in `lead` mode `rail_target` is a stop point beyond the period
+and `rail_velocity` carries the motion, so the device must accept a new target
+and speed while moving without first stopping.
 Acquisition may fall back to receipt time only when receipt exists; a missing
 receipt is rejected by communication supervision. External `ClockOffset` is
 explicitly an estimate with caller-provided uncertainty, not a sync service.

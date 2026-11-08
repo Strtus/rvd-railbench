@@ -63,6 +63,21 @@ run("send-failed", ["--sim-fail-send-at", "2"], 1, "SEND_FAILED")
 run("stale", ["--sim-latency", "0.4"], 3, "STALE_MEASUREMENT")
 bounded = run("bounded", ["--bounded", "--sim-latency", "0"], 1, "MAX_STEPS")
 invoke(replay, [bounded, model], 0)
+# PLC positioning plant: both command modes run; lead keeps a moving reference and stop points ahead.
+run("plc-arrive", ["--plc"], 1, "MAX_STEPS")
+trace = scratch / "plc-lead-trace.csv"
+lead = run("plc-lead", ["--plc", "--command-mode", "lead", "--sim-trace", trace], 1, "MAX_STEPS")
+invoke(replay, [lead, model], 0)
+with (lead / "trajectory.csv").open() as stream:
+    lead_rows = [r for r in csv.DictReader(stream) if r["status"] == "RUN"]
+assert all(abs(float(r["track_err_m"])) < 0.005 for r in lead_rows), "lead mode lost the reference"
+assert len(trace.read_text().splitlines()) > 1000
+# Motion capture that keeps publishing a stale pose: the encoder exposes it, or else the moving reference does.
+run("repeated-pose", ["--plc", "--sim-repeat-pose-at", "5"], 1, "MEASUREMENT_REPEATED")
+config = scratch / "no-encoder.ini"
+config.write_text("[simulation]\nencoder = false\n")
+run("repeated-pose-lead", ["--plc", "--command-mode", "lead", "--sim-repeat-pose-at", "5", "--config", config], 1,
+    "RAIL_TRACKING_ERROR")
 # Track a deliberately unachievable motion profile: supervisor must stop rather than claim success.
 config = scratch / "slow.ini"
 config.write_text("[rail]\nacceleration_m_s2 = 0.001,0.001,0.001\n")
@@ -70,7 +85,8 @@ run("acceleration", ["--config", config], 1, "RAIL_ACCELERATION")
 config.write_text("[simulation]\nbias_m = 3,0,0\n")
 run("envelope", ["--config", config], 3, "MEASURED_RAIL_ENVELOPE")
 for args in (["--lab"], ["--noise", "nan"], ["--noise", "wrong"], ["--noise", "-1"],
-             ["--start", "21", "0", "0"], ["--max-steps", "1.5"], ["--config"], ["--seed", "-1"]):
+             ["--start", "21", "0", "0"], ["--max-steps", "1.5"], ["--config"], ["--seed", "-1"],
+             ["--command-mode", "fast"], ["--sim-trace", scratch / "ideal-trace.csv"]):
     invoke(rail, args, 2)
 config.write_text("[controller]\nperiod_s = 0.5\n")
 invoke(rail, ["--config", config], 2)

@@ -21,9 +21,16 @@ struct Options {
   Vec3 start_hill{18.0, 0.3, -0.2};
   RailConfig rail;
   bool bounded = false;
+  // PLC positioning semantics: move at the commanded speed, stop at the target, retarget while moving.
+  bool plc = false;
+  Vec3 plc_accel{0.2, 0.2, 0.2};  // [m/s^2] plant acceleration, independent of the software limit
+  double plc_delay = 0.03;        // [s] from send to the PLC applying a command
   std::uint32_t seed = 12345;
   int sim_fail_read_at = -1, sim_fail_send_at = -1;
+  int sim_repeat_pose_at = -1;  // motion capture repeats the last pose with fresh stamps
+  bool sim_encoder = true;      // report axis encoder positions alongside motion capture
   Vec3 sim_bias{};
+  std::string sim_trace;  // optional plant trace CSV (bounded and PLC modes)
   std::string experiment_dir;
   std::vector<std::string> config_files;
   std::string log = "pfcr_rail_log.csv";
