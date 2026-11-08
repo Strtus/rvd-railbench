@@ -94,8 +94,17 @@ void load_config(const std::string& path, Options& o) {
         c.communication_timeout_s = number(val);
       else if (key == "rail.tracking_error_m")
         c.max_track_err_rail_m = number(val);
+      else if (key == "rail.sensor_disagreement_m")
+        c.max_sensor_disagreement_m = number(val);
       else if (key == "rail.compensate_latency")
         c.compensate_latency = boolean(val);
+      else if (key == "rail.command_mode") {
+        require(val == "arrive" || val == "lead", "command mode must be arrive or lead");
+        c.command_mode = val == "lead" ? CommandMode::Lead : CommandMode::Arrive;
+      } else if (key == "rail.lead_s")
+        c.lead_s = number(val);
+      else if (key == "rail.tracking_gain_per_s")
+        c.tracking_gain_per_s = number(val);
       else if (key == "mapping.axis") {
         Vec3 axes{};
         triple(val, axes);
@@ -121,9 +130,18 @@ void load_config(const std::string& path, Options& o) {
       } else if (key == "controller.ood_warn_z")
         c.ood_warn_z = number(val);
       else if (key == "simulation.mode") {
-        require(val == "ideal" || val == "bounded", "unsupported simulation mode");
-        o.bounded = val == "bounded";
-      } else if (key == "simulation.seed") {
+        require(val == "ideal" || val == "bounded" || val == "plc", "unsupported simulation mode");
+        o.bounded = val != "ideal";
+        o.plc = val == "plc";
+      } else if (key == "simulation.plc_acceleration_m_s2")
+        triple(val, o.plc_accel);
+      else if (key == "simulation.plc_delay_s")
+        o.plc_delay = number(val);
+      else if (key == "simulation.repeat_pose_at")
+        o.sim_repeat_pose_at = integer(val);
+      else if (key == "simulation.encoder")
+        o.sim_encoder = boolean(val);
+      else if (key == "simulation.seed") {
         const double v = number(val);
         require(v >= 0 && v <= UINT32_MAX && v == std::floor(v), "seed must be uint32");
         o.seed = static_cast<std::uint32_t>(v);
@@ -179,9 +197,15 @@ void validate(const RailConfig& c) {
   }
   require(c.thruster.tau == 2.0 && c.thruster.deadzone == 0.025 && c.tracking_tol_hill_m == 1.0,
           "actuator and PFCR tracking profile are immutable");
-  for (double v : {c.max_measurement_age_s, c.max_measurement_late_s, c.max_clock_skew_s,
-                   c.max_sample_jitter_s, c.communication_timeout_s, c.max_track_err_rail_m, c.ood_warn_z})
+  for (double v :
+       {c.max_measurement_age_s, c.max_measurement_late_s, c.max_clock_skew_s, c.max_sample_jitter_s,
+        c.communication_timeout_s, c.max_track_err_rail_m, c.max_sensor_disagreement_m, c.ood_warn_z})
     require(std::isfinite(v) && v > 0, "runtime thresholds must be finite and positive");
+  require(std::isfinite(c.lead_s) && c.lead_s > 0 && c.lead_s <= 5, "lead_s must be in (0, 5] s");
+  // A gain above 1/period overshoots the reference within one period.
+  require(std::isfinite(c.tracking_gain_per_s) && c.tracking_gain_per_s >= 0 &&
+              c.tracking_gain_per_s * c.period_s <= 1,
+          "tracking_gain_per_s must be in [0, 1/period_s]");
 }
 void validate(const Options& o) {
   validate(o.rail);
@@ -192,8 +216,15 @@ void validate(const Options& o) {
 #endif
   require(std::isfinite(o.noise) && o.noise >= 0 && std::isfinite(o.sim_latency) && o.sim_latency >= 0,
           "noise and latency must be finite and nonnegative");
-  require(o.max_steps >= -1 && o.sim_freeze_at >= -1 && o.sim_fail_read_at >= -1 && o.sim_fail_send_at >= -1,
+  require(o.max_steps >= -1 && o.sim_freeze_at >= -1 && o.sim_fail_read_at >= -1 &&
+              o.sim_fail_send_at >= -1 && o.sim_repeat_pose_at >= -1,
           "step limits must be -1 or nonnegative");
+  require(!o.plc || o.bounded, "PLC simulation integrates bounded motion");
+  require(o.sim_trace.empty() || o.bounded, "plant trace requires bounded or PLC simulation");
+  for (double a : o.plc_accel)
+    require(std::isfinite(a) && a > 0, "PLC acceleration must be finite and positive");
+  require(std::isfinite(o.plc_delay) && o.plc_delay >= 0 && o.plc_delay < o.rail.period_s,
+          "PLC delay must be in [0, period_s)");
   const auto start = FrameMap{o.rail}.hill_to_rail(o.start_hill);
   for (int i = 0; i < 3; ++i) {
     require(std::isfinite(o.start_hill[i]) && std::isfinite(o.sim_bias[i]), "nonfinite simulation input");
@@ -217,17 +248,23 @@ std::string configuration_snapshot(const Options& o) {
     << "\nmeasurement_late_s = " << c.max_measurement_late_s << "\nclock_skew_s = " << c.max_clock_skew_s
     << "\nsample_jitter_s = " << c.max_sample_jitter_s
     << "\ncommunication_timeout_s = " << c.communication_timeout_s
-    << "\ntracking_error_m = " << c.max_track_err_rail_m << "\ncompensate_latency = " << c.compensate_latency
-    << "\n[mapping]\n";
+    << "\ntracking_error_m = " << c.max_track_err_rail_m
+    << "\nsensor_disagreement_m = " << c.max_sensor_disagreement_m
+    << "\ncompensate_latency = " << c.compensate_latency
+    << "\ncommand_mode = " << (c.command_mode == CommandMode::Lead ? "lead" : "arrive")
+    << "\nlead_s = " << c.lead_s << "\ntracking_gain_per_s = " << c.tracking_gain_per_s << "\n[mapping]\n";
   triple_out("axis", c.rail_axis);
   triple_out("sign", c.sign);
   triple_out("scale", c.scale);
   triple_out("target_m", c.target_rail);
   s << "[controller]\ntype = pfcr-dqp\nmodel_id = " << pfcr::params::kModelId << "\nperiod_s = " << c.period_s
     << "\nbackend = " << (o.onnx ? "onnx" : "builtin") << "\nood_warn_z = " << c.ood_warn_z
-    << "\n[simulation]\nmode = " << (o.bounded ? "bounded" : "ideal") << "\nseed = " << o.seed
-    << "\nnoise_m = " << o.noise << "\nlatency_s = " << o.sim_latency << "\nfreeze_at = " << o.sim_freeze_at
-    << "\nfail_read_at = " << o.sim_fail_read_at << "\nfail_send_at = " << o.sim_fail_send_at << '\n';
+    << "\n[simulation]\nmode = " << (o.plc ? "plc" : (o.bounded ? "bounded" : "ideal"))
+    << "\nseed = " << o.seed << "\nnoise_m = " << o.noise << "\nlatency_s = " << o.sim_latency
+    << "\nfreeze_at = " << o.sim_freeze_at << "\nrepeat_pose_at = " << o.sim_repeat_pose_at
+    << "\nfail_read_at = " << o.sim_fail_read_at << "\nfail_send_at = " << o.sim_fail_send_at
+    << "\nencoder = " << o.sim_encoder << "\nplc_delay_s = " << o.plc_delay << '\n';
+  triple_out("plc_acceleration_m_s2", o.plc_accel);
   triple_out("bias_m", o.sim_bias);
   triple_out("start_hill_m", o.start_hill);
   s << "fast = " << o.fast << "\nopen_loop = " << o.open_loop << "\nmax_steps = " << o.max_steps << '\n';

@@ -7,7 +7,7 @@ import pytest
 from rvdlab.config import (ConfigError, Profile, RailConfig, apply_file, envelope_violations, hill_to_rail,
                            load_profile, rail_to_hill, simulation_override)
 from rvdlab.experiments import new_experiment_dir
-from rvdlab.profiles import RailProfile, load_rail_profile, read_active, save, set_active
+from rvdlab.profiles import RailProfile, check, load_rail_profile, read_active, save, set_active
 from rvdlab.project import config_files, load_project, system_status
 from rvdlab.sweep import RunResult, evaluate, fit_mapping, validation_starts
 from rvdlab.telemetry import CsvTail, Trajectory, frozen_run, stall_run, summarize
@@ -44,6 +44,27 @@ def test_override_file_round_trips(tmp_path):
     s = profile.simulation
     assert (s.start_hill_m, s.mode, s.fast, s.max_steps, s.seed) == ((100.0, -0.4, 0.1), "bounded", True, 12, 7)
     assert (s.freeze_at, s.fail_read_at, s.fail_send_at) == (-1, -1, 5)
+
+
+def test_command_mode_and_plc_plant_keys(tmp_path):
+    path = tmp_path / "lead.ini"
+    path.write_text("[rail]\ncommand_mode = lead\nlead_s = 0.4\ntracking_gain_per_s = 0.8\nsensor_disagreement_m = 0.02\n"
+                    "[simulation]\nmode = plc\nplc_acceleration_m_s2 = 0.1,0.2,0.3\nplc_delay_s = 0.05\n"
+                    "repeat_pose_at = 3\nencoder = false\n", encoding="utf-8")
+    profile = Profile()
+    apply_file(profile, path)
+    r, s = profile.rail, profile.simulation
+    assert (r.command_mode, r.lead_s, r.tracking_gain_per_s, r.sensor_disagreement_m) == ("lead", 0.4, 0.8, 0.02)
+    assert (s.mode, s.plc_acceleration_m_s2, s.plc_delay_s, s.repeat_pose_at, s.encoder) == (
+        "plc", (0.1, 0.2, 0.3), 0.05, 3, False)
+    lead = RailProfile("lead", replace(COMPACT, command_mode="lead", lead_s=0.4), (99.9, 0.0, -0.5))
+    assert load_rail_profile(save(tmp_path, lead)) == lead
+    for text in ("[rail]\ncommand_mode = fast\n", "[simulation]\nmode = turbo\n"):
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError):
+            apply_file(Profile(), path)
+    with pytest.raises(ConfigError):
+        check(RailProfile("gain", replace(COMPACT, tracking_gain_per_s=1.5), (99.9, 0.0, -0.5)))
 
 
 def test_rail_profile_round_trip_and_active_pointer(tmp_path):

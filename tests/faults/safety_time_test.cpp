@@ -88,6 +88,23 @@ int main() {
   pfcr::Vec3 target{10.1, 0, 0};
   CHECK(!s.measurement(sample(), nullptr, 1, 1, &target));
   CHECK(s.reason() == "RAIL_TRACKING_ERROR");
+  s = ready();
+  m = sample();
+  m.encoder_pos = {10.02, 0, 0};
+  CHECK(s.measurement(m, nullptr, 1, 1, nullptr));
+  m.encoder_pos = {10.06, 0, 0};
+  CHECK(!s.measurement(m, nullptr, 1, 1, nullptr));
+  CHECK(s.reason() == "SENSOR_DISAGREEMENT");
+  auto before = old;
+  before.encoder_pos = {10, 0, 0};
+  before.rail_pos = sample().rail_pos;
+  s = ready();
+  m = sample();
+  m.encoder_pos = {10.0003, 0, 0};
+  CHECK(s.measurement(m, &before, 1, 1, nullptr));  // identical pose of a stationary rail
+  m.encoder_pos = {10.01, 0, 0};
+  CHECK(!s.measurement(m, &before, 1, 1, nullptr));
+  CHECK(s.reason() == "MEASUREMENT_REPEATED");
   Command cmd;
   cmd.t_tick = 1;
   cmd.t_arrive = 2;
@@ -108,6 +125,14 @@ int main() {
   s = ready();
   CHECK(!s.command(cmd, {-.3, 0, 0}));
   CHECK(s.reason() == "RAIL_ACCELERATION");
+  s = ready();
+  cmd.rail_velocity[0] = .1;
+  cmd.rail_reference = {21, 0, 0};
+  CHECK(!s.command(cmd, {}));
+  CHECK(s.reason() == "RAIL_ENVELOPE");
+  cmd.rail_reference = {10, 0, 0};
+  s = ready();
+  CHECK(s.command(cmd, {}));
   s = ready();
   cmd.rail_velocity[0] = kNoStamp;
   CHECK(!s.command(cmd, {}));

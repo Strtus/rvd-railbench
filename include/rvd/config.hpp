@@ -3,6 +3,9 @@
 
 namespace rvd {
 using pfcr::Vec3;
+// Arrive: each command is a segment that ends at the next reference when the period ends.
+// Lead: the rail follows the integrated reference by speed; the target is only a stop point ahead.
+enum class CommandMode { Arrive, Lead };
 struct RailConfig {
   double period_s = 1.0;
 
@@ -25,6 +28,11 @@ struct RailConfig {
 
   double communication_timeout_s = 0.3;
   double max_track_err_rail_m = 0.05;
+  double max_sensor_disagreement_m = 0.05;  // motion capture vs encoder, when both are reported
+
+  CommandMode command_mode = CommandMode::Arrive;
+  double lead_s = 0.5;               // stop point placed this far beyond the period [s]
+  double tracking_gain_per_s = 0.5;  // fraction of the reference error removed per second
   double tracking_tol_hill_m = 1.0;
   double ood_warn_z = 6.5;
   pfcr::ActuatorEmulation thruster{2.0, {0.85, 0.85, 0.85}, 0.025};

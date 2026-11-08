@@ -70,4 +70,65 @@ int main() {
   delayed.advance_to(.21);
   CHECK(std::fabs(delayed.velocity()[0] - before) <= o.rail.rail_amax[0] * .01 + 1e-12);
   CHECK(!delayed.send_target(cmd, ack));
+
+  // PLC positioning: commanded speed, rest at a reached target, retarget while moving without stopping.
+  Options p;
+  p.fast = p.bounded = p.plc = true;
+  p.noise = 0;
+  p.sim_latency = 0;
+  p.plc_delay = .02;
+  p.plc_accel = {.2, .2, .2};
+  SimulatedRailIO plc({10, 0, 0}, p);
+  Command seg;
+  seg.t_tick = 0;
+  seg.t_arrive = 1;
+  seg.rail_target = {10.02, 0, 0};
+  seg.rail_velocity = {.05, 0, 0};
+  CHECK(plc.send_target(seg, ack));
+  plc.advance_to(.01);
+  CHECK(plc.velocity()[0] == 0);  // command not yet applied
+  plc.advance_to(.3);
+  CHECK(plc.velocity()[0] > 0 && plc.velocity()[0] <= .05 + 1e-12);
+  plc.advance_to(.9);
+  CHECK(plc.position()[0] == 10.02 && plc.velocity()[0] == 0);
+  seg.t_arrive = 2;
+  seg.rail_target = {11, 0, 0};
+  CHECK(plc.send_target(seg, ack));
+  plc.advance_to(1.5);
+  CHECK(near(plc.velocity()[0], .05, 1e-9));
+  seg.t_arrive = 3;
+  seg.rail_target = {12, 0, 0};
+  seg.rail_velocity = {-.04, 0, 0};  // the PLC takes the speed magnitude; direction comes from the target
+  CHECK(plc.send_target(seg, ack));
+  double slowest = 1;
+  for (int k = 151; k <= 300; ++k) {
+    plc.advance_to(k * .01);
+    slowest = std::min(slowest, plc.velocity()[0]);
+  }
+  CHECK(slowest >= .04 - 1e-9);
+  Measurement e;
+  CHECK(plc.read_measurement(e));
+  CHECK(e.encoder_pos == plc.position() && e.t_encoder == 3);
+
+  Options q;
+  q.fast = true;
+  q.noise = 0;
+  q.sim_repeat_pose_at = 1;
+  SimulatedRailIO repeat({10, 0, 0}, q);
+  Measurement r1, r2, r3;
+  seg.t_tick = 0;
+  seg.t_arrive = 1;
+  seg.rail_target = {10.5, 0, 0};
+  CHECK(repeat.read_measurement(r1) && repeat.send_target(seg, ack));
+  repeat.advance_to(1);
+  seg.t_arrive = 2;
+  seg.rail_target = {10.7, 0, 0};
+  CHECK(repeat.read_measurement(r2) && repeat.send_target(seg, ack));
+  repeat.advance_to(2);
+  CHECK(repeat.read_measurement(r3));
+  CHECK(r2.rail_pos[0] == 10.5 && r3.rail_pos == r2.rail_pos && r3.frame_id == r2.frame_id + 1);
+  CHECK(r3.encoder_pos[0] == 10.7 && r3.t_acquired > r2.t_acquired);
+  q.sim_encoder = false;
+  SimulatedRailIO blind({10, 0, 0}, q);
+  CHECK(blind.read_measurement(r1) && !has(r1.encoder_pos[0]) && !has(r1.t_encoder));
 }

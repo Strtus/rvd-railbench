@@ -6,7 +6,9 @@ namespace rvd {
 using pfcr::Vec3;
 // all t_* fields are seconds on RailIO::now_s(); NaN = not provided
 struct Measurement {
-  Vec3 rail_pos{};  // [m]
+  Vec3 rail_pos{};                                 // [m]
+  Vec3 encoder_pos{kNoStamp, kNoStamp, kNoStamp};  // [m] rail axis encoders; NaN = not provided
+  double t_encoder = kNoStamp;
   double t_acquired = kNoStamp;
   double t_received = kNoStamp;
   double t_user1 = kNoStamp;
@@ -19,8 +21,9 @@ struct Measurement {
 
 struct Command {
   int k = 0;
-  Vec3 rail_target{};    // [m], reach at t_arrive
+  Vec3 rail_target{};    // [m], positioning target; arrive mode reaches it at t_arrive, lead mode stops there
   Vec3 rail_velocity{};  // [m/s], constant over the period
+  Vec3 rail_reference{kNoStamp, kNoStamp, kNoStamp};  // [m], where the rail should be at t_arrive
   double t_tick = 0.0;
   double t_arrive = 0.0;
 };

@@ -34,7 +34,11 @@ class RailConfig:
     sample_jitter_s: float = 0.2
     communication_timeout_s: float = 0.3
     tracking_error_m: float = 0.05
+    sensor_disagreement_m: float = 0.05
     compensate_latency: bool = False
+    command_mode: str = "arrive"
+    lead_s: float = 0.5
+    tracking_gain_per_s: float = 0.5
 
 
 @dataclass
@@ -53,8 +57,12 @@ class SimulationConfig:
     latency_s: float = 0.010
     bias_m: Vec3 = (0.0, 0.0, 0.0)
     freeze_at: int = -1
+    repeat_pose_at: int = -1
     fail_read_at: int = -1
     fail_send_at: int = -1
+    encoder: bool = True
+    plc_acceleration_m_s2: Vec3 = (0.2, 0.2, 0.2)
+    plc_delay_s: float = 0.03
     start_hill_m: Vec3 = (18.0, 0.3, -0.2)
     fast: bool = False
     open_loop: bool = False
@@ -116,17 +124,25 @@ _RAIL_NUMBERS = {
     "rail.sample_jitter_s": "sample_jitter_s",
     "rail.communication_timeout_s": "communication_timeout_s",
     "rail.tracking_error_m": "tracking_error_m",
+    "rail.sensor_disagreement_m": "sensor_disagreement_m",
+    "rail.lead_s": "lead_s",
+    "rail.tracking_gain_per_s": "tracking_gain_per_s",
     "controller.period_s": "period_s",
 }
-_SIM_NUMBERS = {"simulation.noise_m": "noise_m", "simulation.latency_s": "latency_s"}
+COMMAND_MODES = ("arrive", "lead")
+SIMULATION_MODES = ("ideal", "bounded", "plc")
+_SIM_NUMBERS = {"simulation.noise_m": "noise_m", "simulation.latency_s": "latency_s",
+                "simulation.plc_delay_s": "plc_delay_s"}
 _SIM_INTEGERS = {
     "simulation.freeze_at": "freeze_at",
+    "simulation.repeat_pose_at": "repeat_pose_at",
     "simulation.fail_read_at": "fail_read_at",
     "simulation.fail_send_at": "fail_send_at",
     "simulation.max_steps": "max_steps",
 }
-_SIM_BOOLEANS = {"simulation.fast": "fast", "simulation.open_loop": "open_loop"}
-_SIM_TRIPLES = {"simulation.bias_m": "bias_m", "simulation.start_hill_m": "start_hill_m"}
+_SIM_BOOLEANS = {"simulation.fast": "fast", "simulation.open_loop": "open_loop", "simulation.encoder": "encoder"}
+_SIM_TRIPLES = {"simulation.bias_m": "bias_m", "simulation.start_hill_m": "start_hill_m",
+                "simulation.plc_acceleration_m_s2": "plc_acceleration_m_s2"}
 
 
 def _apply(profile: Profile, key: str, value: str) -> None:
@@ -137,6 +153,10 @@ def _apply(profile: Profile, key: str, value: str) -> None:
         setattr(rail, _RAIL_NUMBERS[key], _number(value))
     elif key == "rail.compensate_latency":
         rail.compensate_latency = _boolean(value)
+    elif key == "rail.command_mode":
+        if value not in COMMAND_MODES:
+            raise ConfigError("command mode must be arrive or lead")
+        rail.command_mode = value
     elif key == "mapping.axis":
         axes = _triple(value)
         if any(a not in (0.0, 1.0, 2.0) for a in axes):
@@ -157,7 +177,7 @@ def _apply(profile: Profile, key: str, value: str) -> None:
     elif key == "controller.ood_warn_z":
         ctrl.ood_warn_z = _number(value)
     elif key == "simulation.mode":
-        if value not in ("ideal", "bounded"):
+        if value not in SIMULATION_MODES:
             raise ConfigError("unsupported simulation mode")
         sim.mode = value
     elif key == "simulation.seed":
@@ -222,6 +242,12 @@ def validate(profile: Profile) -> None:
             raise ConfigError("rail minimum must be below maximum")
         if not (r.velocity_m_s[i] > 0 and r.acceleration_m_s2[i] > 0):
             raise ConfigError("rail velocity and acceleration limits must be positive")
+    if not 0 < r.lead_s <= 5:
+        raise ConfigError("lead_s must be in (0, 5] s")
+    if not 0 <= r.tracking_gain_per_s * r.period_s <= 1:
+        raise ConfigError("tracking_gain_per_s must be in [0, 1/period_s]")
+    if not r.sensor_disagreement_m > 0:
+        raise ConfigError("sensor_disagreement_m must be positive")
 
 
 def load_profile(root: Path, files: list[Path] | None = None) -> Profile:
@@ -266,7 +292,8 @@ def envelope_violations(rail: RailConfig, position: Vec3) -> list[str]:
 
 
 def simulation_override(start: Vec3, mode: str, fast: bool, max_steps: int, seed: int, *,
-                        freeze_at: int = -1, fail_read_at: int = -1, fail_send_at: int = -1) -> str:
+                        freeze_at: int = -1, repeat_pose_at: int = -1, fail_read_at: int = -1,
+                        fail_send_at: int = -1) -> str:
     """Last --config file of a TUI run: rail_main has no CLI switch back to ideal or real time."""
     return (
         "[simulation]\n"
@@ -276,6 +303,7 @@ def simulation_override(start: Vec3, mode: str, fast: bool, max_steps: int, seed
         f"seed = {seed}\n"
         f"start_hill_m = {start[0]!r},{start[1]!r},{start[2]!r}\n"
         f"freeze_at = {freeze_at}\n"
+        f"repeat_pose_at = {repeat_pose_at}\n"
         f"fail_read_at = {fail_read_at}\n"
         f"fail_send_at = {fail_send_at}\n"
     )

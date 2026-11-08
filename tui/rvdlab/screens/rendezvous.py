@@ -43,7 +43,7 @@ class RendezvousScreen(Page):
                         yield Input(id=f"start-{axis}", classes="num", compact=True, restrict=NUMBER)
                 with Horizontal(classes="form-row"):
                     yield Static("mode", classes="form-key mid")
-                    yield Select([("ideal", "ideal"), ("bounded", "bounded")], id="mode",
+                    yield Select([("ideal", "ideal"), ("bounded", "bounded"), ("plc", "plc")], id="mode",
                                  allow_blank=False, compact=True)
                     yield Static("clock", classes="form-key mid gap")
                     yield Select([("fast", "fast"), ("1 s real", "real")], id="clock",
@@ -56,8 +56,9 @@ class RendezvousScreen(Page):
                 yield Static("FAULT INJECTION", classes="form-title")
                 with Horizontal(classes="form-row"):
                     yield Static("fault", classes="form-key mid")
-                    yield Select([("none", "none"), ("frozen sensor", "freeze"), ("read failure", "read"),
-                                  ("send failure", "send")], id="fault", allow_blank=False, compact=True)
+                    yield Select([("none", "none"), ("frozen sensor", "freeze"), ("repeated pose", "repeat"),
+                                  ("read failure", "read"), ("send failure", "send")], id="fault",
+                                 allow_blank=False, compact=True)
                     yield Static("at k", classes="form-key mid gap")
                     yield Input("30", id="fault-step", classes="num", compact=True, restrict=r"[0-9]*")
                 with Horizontal(classes="button-row"):
@@ -172,8 +173,8 @@ class RendezvousScreen(Page):
             self.fail("fault injection needs a step")
             return
         at = int(fault_text) if fault != "none" else -1
-        faults = {"freeze_at": at if fault == "freeze" else -1, "fail_read_at": at if fault == "read" else -1,
-                  "fail_send_at": at if fault == "send" else -1}
+        faults = {"freeze_at": at if fault == "freeze" else -1, "repeat_pose_at": at if fault == "repeat" else -1,
+                  "fail_read_at": at if fault == "read" else -1, "fail_send_at": at if fault == "send" else -1}
         directory = new_experiment_dir(p.experiments_dir)
         handle, name = tempfile.mkstemp(prefix="rvdlab-", suffix=".ini")
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
