@@ -105,7 +105,8 @@ class Node:
         self.sample_duration = math.nan
         self.feedback_error: str | None = "no sample yet"
         self.sample_seq = 0
-        self.polled_at = -math.inf
+        self._polls_started = 0
+        self._polls_done = 0
         self.target: dict[str, float] = {}
         self.speed: dict[str, float] = {}
         self.armed: set[str] = set()
@@ -168,13 +169,12 @@ class Node:
 
     def snapshot(self, fresh: bool = False) -> dict[str, Any]:
         with self.lock:
-            if fresh:  # poll now and answer with a sample taken after the request arrived
-                asked = self.clock()
+            if fresh:  # wait for a poll that starts after this request; counted, as clocks may be coarse
+                wanted = self._polls_started + 1
                 self._next_poll = -math.inf
                 self._wake.notify_all()
-                end = asked + self.settings.wait_s
-                while not self._closing and self.clock() < end and not (
-                        self.sample_time >= asked or (self.feedback_error and self.polled_at >= asked)):
+                end = self.clock() + self.settings.wait_s
+                while not self._closing and self._polls_done < wanted and self.clock() < end:
                     self._wake.wait(end - self.clock())
             return self._snapshot()
 
@@ -383,7 +383,7 @@ class Node:
             now = self.clock()
             self.job = {"id": uuid.uuid4().hex, "status": "running", "waypoint": 0, "count": len(checked),
                         "points": checked, "started": now, "reason": None, "refreshed": -math.inf,
-                        "dirty": True, "arrivals": 0, "checked_sample": self.sample_time}
+                        "dirty": True, "arrivals": 0, "checked_sample": self.sample_seq}
             self.reason = "task"
             self.revision += 1
             self._wake.notify_all()
@@ -489,8 +489,8 @@ class Node:
         if job and job["status"] == "running":
             if now - job["started"] > s.task_timeout_s:
                 self._request_stop("task_timeout", force=False, revoke=True)
-            elif self.sample_time != job["checked_sample"]:
-                job["checked_sample"] = self.sample_time
+            elif self.sample_seq != job["checked_sample"]:
+                job["checked_sample"] = self.sample_seq
                 goal, _ = job["points"][job["waypoint"]]
                 there = all(abs(v - self.position[n]) <= self.axes[n].tolerance for n, v in goal.items())
                 job["arrivals"] = job["arrivals"] + 1 if there and not job["dirty"] else 0
@@ -525,8 +525,12 @@ class Node:
         self._shutdown()
 
     def _step(self) -> None:
-        if self.clock() >= self._next_poll:
-            self._next_poll = self.clock() + self.settings.poll_s
+        with self.lock:
+            due = self.clock() >= self._next_poll
+            if due:
+                self._next_poll = self.clock() + self.settings.poll_s
+                self._polls_started += 1
+        if due:
             self._poll()
         with self.lock:
             self._expire()
@@ -545,7 +549,7 @@ class Node:
         except Exception as exc:
             sample, error = None, exc
         with self.lock:
-            self.polled_at = self.clock()
+            self._polls_done += 1
             self._wake.notify_all()
             self.device = dict(self.backend.status)
             if sample is None:
