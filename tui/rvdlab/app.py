@@ -8,6 +8,7 @@ from textual.theme import Theme
 
 from .config import Vec3
 from .project import load_project
+from .remote import connection_path
 from .screens import (HomeScreen, ManagerScreen, MotionScreen, OverviewScreen, RendezvousScreen, SensorsScreen,
                       SetupScreen)
 
@@ -35,11 +36,12 @@ class RvdLabApp(App):
     BINDINGS = [Binding("ctrl+q", "quit", "Quit", show=False, priority=True)]
 
     def __init__(self, root: Path | None = None, configs: list[Path] | None = None,
-                 experiments: Path | None = None, profiles: Path | None = None) -> None:
+                 experiments: Path | None = None, profiles: Path | None = None, node: Path | None = None) -> None:
         super().__init__()
         self._sources = (root, configs, experiments, profiles)
         self.project = load_project(root, configs, experiments, profiles)
         self.start_override: Vec3 | None = None
+        self.node_path = connection_path(node)
 
     def reload_project(self) -> None:
         self.project = load_project(*self._sources)

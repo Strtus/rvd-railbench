@@ -65,6 +65,8 @@ Options parse_options(int argc, char** argv) {
       opt.rail.command_mode = mode == "lead" ? CommandMode::Lead : CommandMode::Arrive;
     } else if (a == "--sim-trace")
       opt.sim_trace = next(i);
+    else if (a == "--bridge")
+      opt.bridge_port = integer(i);
     else if (a == "--sim-repeat-pose-at")
       opt.sim_repeat_pose_at = integer(i);
     else if (a == "--model-dir")
@@ -97,7 +99,7 @@ Options parse_options(int argc, char** argv) {
           "  [--command-mode arrive|lead] [--max-steps N] [--model-dir DIR] [--log FILE]\n"
           "  [--experiment-dir NEW_DIR] [--noise M] [--start X Y Z] [--sim-latency S] [--sim-freeze-at K]\n"
           "  [--sim-repeat-pose-at K] [--sim-fail-read-at K] [--sim-fail-send-at K] [--seed UINT32]\n"
-          "  [--sim-trace FILE]");
+          "  [--sim-trace FILE] [--bridge PORT]");
       throw std::invalid_argument("help");
     } else
       throw std::invalid_argument("unknown argument: " + a);

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import threading
 from pathlib import Path
+from typing import Any
 
 from rich.table import Table
 from rich.text import Text
@@ -13,12 +15,14 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Input, RichLog, Select, Sparkline, Static
 
-from ..config import Vec3, envelope_violations, hill_to_rail, simulation_override
+from ..config import Vec3, envelope_violations, hill_to_rail, rail_to_hill, simulation_override
 from ..experiments import new_experiment_dir, read_experiment, simulation_command
 from ..plot import PlotView
 from ..project import ProjectError
+from ..remote import AXES, Bridge, connect, move, remote_override
 from ..telemetry import CsvTail, Series, norm3, num
 from .base import DIM, Page
+from .node_view import ConfirmModal
 
 NUMBER = r"[-+0-9.eE]*"
 
@@ -29,13 +33,18 @@ def _range(values: list[float]) -> str:
 
 class RendezvousScreen(Page):
     TITLE_TEXT = "Autonomous Rendezvous"
-    BINDINGS = [*Page.BINDINGS, Binding("f5", "run", "Run"), Binding("f6", "stop", "Stop")]
+    BINDINGS = [*Page.BINDINGS, Binding("f5", "run", "Run"), Binding("f6", "stop", "Stop"),
+                Binding("f9", "rail_stop", "Stop rail")]
 
     def compose(self) -> ComposeResult:
         yield from self.compose_title()
         yield Static(id="run-context", classes="context")
         with Horizontal(id="run-body"):
             with Vertical(id="run-side"):
+                with Horizontal(classes="form-row"):
+                    yield Static("rail", classes="form-key mid")
+                    targets = [("simulator", "sim")] + ([("rail node", "node")] if self.lab.node_path else [])
+                    yield Select(targets, id="target", allow_blank=False, compact=True)
                 yield Static("START  ·  HILL FRAME [m]", classes="form-title")
                 with Horizontal(classes="form-row"):
                     for axis in "xyz":
@@ -64,6 +73,7 @@ class RendezvousScreen(Page):
                 with Horizontal(classes="button-row"):
                     yield Button("Run", id="run", compact=True)
                     yield Button("Stop", id="stop", compact=True, disabled=True)
+                    yield Button("To start", id="to-start", compact=True, disabled=True)
                 yield Static(id="run-status")
                 yield Static("distance [m]", classes="spark-label", id="label-distance")
                 yield Sparkline([], id="spark-distance")
@@ -76,6 +86,8 @@ class RendezvousScreen(Page):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.bridge: Bridge | None = None
+        self.cancel_move: threading.Event | None = None
         self.process: asyncio.subprocess.Process | None = None
         self.running = False
         self.stop_requested = False
@@ -109,6 +121,10 @@ class RendezvousScreen(Page):
             self.lab.start_override = None
         if p.build.rail_main is None:
             context = "rail_main is not built: cmake --preset release && cmake --build --preset release"
+        elif self.on_node():
+            controller = f"{p.profile.controller.type} {p.profile.controller.backend}"
+            context = (f"REAL RAIL through the rail node · {controller} · starts where the rail is · "
+                       f"results in {p.relative(p.experiments_dir)}")
         else:
             source = (f"rail profile {p.rail_profile}" if p.rail_profile
                       else " + ".join(f.name for f in p.profile.files) or "built-in defaults")
@@ -143,12 +159,23 @@ class RendezvousScreen(Page):
     def _stop_pressed(self) -> None:
         self.stop()
 
+    def on_node(self) -> bool:
+        return self.query_one("#target", Select).value == "node"
+
+    @on(Select.Changed, "#target")
+    def target_changed(self) -> None:
+        self.set_controls(self.running)
+        self.on_screen_resume()
+
     def start(self) -> None:
         if self.running:
             return
         p = self.project
         if p.config_error:
             self.fail(f"configuration error: {p.config_error}")
+            return
+        if self.on_node():
+            self.start_on_node()
             return
         try:
             start = tuple(float(self.query_one(f"#start-{a}", Input).value) for a in "xyz")
@@ -192,9 +219,125 @@ class RendezvousScreen(Page):
         self.execute(args, directory, override)
 
     def stop(self) -> None:
+        if self.bridge is not None:
+            if self.stop_requested and self.process is not None and self.process.returncode is None:
+                self.process.terminate()  # second press: rail_main did not end on its own
+                return
+            self.stop_requested = True
+            self.stop_bridge(self.bridge)
+            return
         if self.process is not None and self.process.returncode is None:
             self.stop_requested = True
             self.process.terminate()
+
+    def action_rail_stop(self) -> None:
+        if self.cancel_move is not None:
+            self.cancel_move.set()
+        if self.bridge is not None:
+            self.stop()
+        elif self.lab.node_path is not None:
+            self.stop_bridge(None)
+
+    @work(thread=True, group="rail-stop")
+    def stop_bridge(self, bridge: Bridge | None) -> None:
+        try:
+            if bridge is not None:
+                bridge.stop()
+            else:
+                connect(self.lab.node_path).stop()  # type: ignore[arg-type]
+            message = "rail stopped"
+        except Exception as error:
+            message = f"STOP FAILED: {error}. Use the emergency stop."
+        self.app.call_from_thread(self.log_line, message)
+
+    def log_line(self, text: str) -> None:
+        self.query_one("#run-log", RichLog).write(text)
+
+    # runs on the rail node
+
+    def node_state(self) -> tuple[Any, dict[str, Any]]:
+        node = connect(self.lab.node_path)  # type: ignore[arg-type]
+        return node, node.state()
+
+    def start_on_node(self) -> None:
+        if self.project.build.rail_main is None:
+            self.fail("rail_main is not built")
+            return
+        steps = self.query_one("#max-steps", Input).value.strip()
+        self.prepare_node_run(int(steps) if steps else -1)
+
+    @work(thread=True, exclusive=True, group="node-run")
+    def prepare_node_run(self, steps: int) -> None:
+        try:
+            _, state = self.node_state()
+        except Exception as error:
+            self.app.call_from_thread(self.fail, f"rail node: {error}")
+            return
+        here = tuple(state["position"][a] for a in AXES)
+        hill = rail_to_hill(self.project.profile.rail, here)  # type: ignore[arg-type]
+        text = ("PFCR will drive the REAL RAIL from where it stands now.\n"
+                f"rail  {here[0]:.4f}  {here[1]:.4f}  {here[2]:.4f} m\n"
+                f"Hill  {hill[0]:.3f}  {hill[1]:.3f}  {hill[2]:.3f} m\n"
+                f"steps {steps if steps >= 0 else 'until docked or stopped'}\n\n"
+                "Watch the rail and keep the emergency stop within reach. F6 or F9 stops it.")
+        self.app.call_from_thread(self.app.push_screen, ConfirmModal("Run on the rail", text, "Run"),
+                                  lambda ok: self.arm_node(steps) if ok else None)
+
+    @work(thread=True, exclusive=True, group="node-run")
+    def arm_node(self, steps: int) -> None:
+        try:
+            bridge = Bridge(connect(self.lab.node_path),  # type: ignore[arg-type]
+                            log=lambda m: self.app.call_from_thread(self.log_line, m))
+            bridge.acquire()
+        except Exception as error:
+            self.app.call_from_thread(self.fail, f"cannot take control of the rail: {error}")
+            return
+        bridge.start()
+        self.app.call_from_thread(self.launch_node_run, bridge, steps)
+
+    def launch_node_run(self, bridge: Bridge, steps: int) -> None:
+        p = self.project
+        directory = new_experiment_dir(p.experiments_dir)
+        handle, name = tempfile.mkstemp(prefix="rvdlab-", suffix=".ini")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(remote_override(steps))
+        override = Path(name)
+        args = simulation_command(p, override, directory) + ["--bridge", str(bridge.port)]
+        p.experiments_dir.mkdir(parents=True, exist_ok=True)
+        self.bridge = bridge
+        self.reset(directory)
+        self.execute(args, directory, override)
+
+    @on(Button.Pressed, "#to-start")
+    def to_start(self) -> None:
+        try:
+            start = tuple(float(self.query_one(f"#start-{a}", Input).value) for a in "xyz")
+        except ValueError:
+            self.fail("start position needs three numbers")
+            return
+        rail = self.project.profile.rail
+        goal = hill_to_rail(rail, start)  # type: ignore[arg-type]
+        violations = envelope_violations(rail, goal)
+        if violations:
+            self.fail("start maps outside the rail envelope: " + "; ".join(violations))
+            return
+        speed = {a: 0.5 * v for a, v in zip(AXES, rail.velocity_m_s)}
+        text = (f"Move the REAL RAIL to the start Hill ({start[0]:g}, {start[1]:g}, {start[2]:g}) m,\n"
+                f"rail ({goal[0]:.4f}, {goal[1]:.4f}, {goal[2]:.4f}) m, at half the rail speed limits.\n\n"
+                "Watch the rail and keep the emergency stop within reach. F9 stops it.")
+        self.app.push_screen(ConfirmModal("Move to start", text, "Move"),
+                             lambda ok: self.move_to_start(dict(zip(AXES, goal)), speed) if ok else None)
+
+    @work(thread=True, exclusive=True, group="node-move")
+    def move_to_start(self, goal: dict[str, float], speed: dict[str, float]) -> None:
+        self.cancel_move = threading.Event()
+        self.app.call_from_thread(self.log_line, "moving to the start ...")
+        try:
+            status = move(connect(self.lab.node_path), goal, speed, self.cancel_move)  # type: ignore[arg-type]
+        except Exception as error:
+            status = f"failed: {error}"
+        self.cancel_move = None
+        self.app.call_from_thread(self.log_line, f"move to start {status}")
 
     def reset(self, directory: Path) -> None:
         self.running = True
@@ -211,10 +354,15 @@ class RendezvousScreen(Page):
         self.render_status()
 
     def set_controls(self, running: bool) -> None:
+        node = self.on_node()
         self.query_one("#run", Button).disabled = running
         self.query_one("#stop", Button).disabled = not running
+        self.query_one("#to-start", Button).disabled = running or not node
         for widget in self.query("#run-side Input, #run-side Select"):
             widget.disabled = running
+        if not running and node:
+            for name in ("#mode", "#clock", "#seed", "#fault", "#fault-step"):
+                self.query_one(name).disabled = True
 
     @work(exclusive=True, group="simulation")
     async def execute(self, args: list[str], directory: Path, override: Path) -> None:
@@ -242,6 +390,9 @@ class RendezvousScreen(Page):
             timer.stop()
             override.unlink(missing_ok=True)
             self.process = None
+            if self.bridge is not None:
+                bridge, self.bridge = self.bridge, None
+                await asyncio.to_thread(bridge.close)
         self.consume(tail.poll())
         self.finish(directory, code)
 
@@ -269,7 +420,7 @@ class RendezvousScreen(Page):
         self.running = False
         self.set_controls(False)
         self.render_status()
-        self.notify(" ".join(self.outcome).strip(), title="Simulation finished")
+        self.notify(" ".join(self.outcome).strip(), title="Run finished")
 
     def refresh_plots(self) -> None:
         s = self.series

@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="experiment directory (default: $RVDLAB_EXPERIMENTS, else ~/.rvdlab or <root>/experiments)")
     parser.add_argument("--profiles", type=Path,
                         help="rail profile directory (default: $RVDLAB_PROFILES, else ~/.rvdlab or <root>/profiles)")
+    parser.add_argument("--node", type=Path,
+                        help="connection.json of a rail node (default: $RVDLAB_NODE, else ~/.rvdlab/node/)")
     parser.add_argument("--check", action="store_true",
                         help="print the system status and exit; exit code 1 if the simulator or policy is not ready")
     parser.add_argument("--version", action="store_true", help="print versions and exit")
@@ -55,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
 
     from .app import RvdLabApp
 
-    RvdLabApp(root=args.root, configs=configs, experiments=args.experiments, profiles=args.profiles).run()
+    RvdLabApp(root=args.root, configs=configs, experiments=args.experiments, profiles=args.profiles,
+              node=args.node).run()
     return 0
 
 

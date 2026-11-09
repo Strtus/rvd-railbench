@@ -327,9 +327,17 @@ DataTable > .datatable--hover {
     margin-bottom: 1;
 }
 
-TextModal {
+TextModal, ConfirmModal {
     align: center middle;
     background: #000000 60%;
+}
+
+#confirm {
+    width: 70;
+    height: auto;
+    padding: 1 2;
+    background: #121212;
+    border: solid #3a3a3a;
 }
 
 #modal {
