@@ -21,6 +21,7 @@ class Sample:
     time: float  # node clock when the read started
     duration: float
     raw: dict[str, int] = field(default_factory=dict)
+    dropped: frozenset[str] = frozenset()  # armed servo axes whose drive no longer reports enabled
 
 
 def create(profile: dict[str, Any], allow_motion: bool, clock: Callable[[], float] = time.monotonic) -> Any:

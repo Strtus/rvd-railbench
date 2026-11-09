@@ -12,6 +12,8 @@ from typing import Any, Callable, Iterable
 from .backend import BackendError, InterlockError, Sample
 from .profile import axes as profile_axes
 
+ENABLE_CONFIRM_READS = 3
+
 
 class ModbusError(BackendError):
     pass
@@ -219,12 +221,11 @@ class PlcBackend:
             if "sample_count_d" in spec and self.io.read_d(spec["sample_count_d"]) == 0:
                 raise ModbusError(f"{name} encoder reports no valid samples")
             raw[name] = self.io.read_d(spec["encoder_d"])
-        for name in sorted(self.armed):
-            spec = self._spec[name]
-            if spec["type"] == "servo" and self.io.read_d(spec["enabled_d"]) != 1:
-                raise ModbusError(f"{name} drive is no longer enabled")
+        dropped = frozenset(n for n in sorted(self.armed)
+                            if self._spec[n]["type"] == "servo" and self.io.read_d(self._spec[n]["enabled_d"]) != 1)
         self.raw = raw
-        return Sample({n: self._position(n, c) for n, c in raw.items()}, begin, self._clock() - begin, dict(raw))
+        return Sample({n: self._position(n, c) for n, c in raw.items()}, begin, self._clock() - begin, dict(raw),
+                      dropped)
 
     def arm(self, names: Iterable[str]) -> None:
         self._require_motion()
@@ -240,15 +241,42 @@ class PlcBackend:
             spec = self._spec[name]
             if spec["type"] == "servo":
                 self.io.write_d(spec["target_d"], self.io.read_d(spec["encoder_d"]))
-                self.io.write_d(spec["speed_d"], self._speed_count(name, 0.1 * self.axes[name].max_speed))
-                self._clear_stop(spec)
-                self.io.pulse_m(spec["enable_m"])
-                deadline = self._clock() + self.profile.get("enable_timeout_s", 2.0)
-                while self.io.read_d(spec["enabled_d"]) != 1:
-                    if self._clock() >= deadline:
-                        raise ModbusError(f"{name} enable was not confirmed")
-                    self._sleep(0.02)
+                if self.io.read_d(spec["enabled_d"]) != 1:  # an enabled drive is taken over without an enable edge
+                    self.io.write_d(spec["speed_d"], 0)  # latched where it stands, enabling cannot start a move
+                    self._clear_stop(spec)
+                    self.io.pulse_m(spec["enable_m"])
+                    self._await_enabled(name, spec)
             self.armed.add(name)
+
+    def _await_enabled(self, name: str, spec: dict[str, Any]) -> None:
+        # A drive re-enabled soon after a disable can report enabled and drop out again, so the report
+        # must hold for several reads.
+        deadline = self._clock() + self.profile.get("enable_timeout_s", 5.0)
+        seen, ever = 0, False
+        while True:
+            on = self.io.read_d(spec["enabled_d"]) == 1
+            seen, ever = (seen + 1 if on else 0), ever or on
+            if seen >= ENABLE_CONFIRM_READS:
+                return
+            if self._clock() >= deadline:
+                raise ModbusError(f"{name} enable was not confirmed"
+                                  + (" (it reported enabled, then dropped out)" if ever and not seen else ""))
+            self._sleep(0.1 if seen else 0.02)
+
+    def adopt(self, names: Iterable[str]) -> list[str]:
+        """Takes over servo axes that are still enabled, e.g. held through a restart, holding them where they are."""
+        if not self.allow_motion:
+            return []
+        self._check_interlock(identity=True)
+        found = []
+        for name in names:
+            spec = self._spec[name]
+            if spec["type"] == "servo" and name not in self.armed and self.io.read_d(spec["enabled_d"]) == 1:
+                self.io.write_d(spec["target_d"], self.io.read_d(spec["encoder_d"]))
+                self.armed.add(name)
+                found.append(name)
+        self.active = self.active or bool(found)
+        return found
 
     def command(self, targets: dict[str, float], speeds: dict[str, float]) -> None:
         self._require_motion()
@@ -334,7 +362,4 @@ class PlcBackend:
         self.active = bool(holding)
 
     def close(self) -> None:
-        try:
-            self.stop()
-        finally:
-            self.io.close()
+        self.io.close()  # the node stops the axes first; held axes may stay enabled on purpose

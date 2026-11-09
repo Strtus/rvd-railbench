@@ -38,6 +38,7 @@ class Settings:
     task_timeout_s: float = 900.0
     stall_timeout_s: float = 3.0
     max_sample_age_s: float = 1.0
+    drive_dropout_s: float = 1.0  # a drive's enabled report must be missing this long; it flickers while moving
     max_observation_age_s: float = 1.0
     arrival_samples: int = 3
     stop_retry_s: float = 1.0
@@ -128,7 +129,12 @@ class Node:
         self._next_stop_retry = -math.inf
         self._stop_req: _Request | None = None
         self._stop_force = False
-        self._stop_full = False
+        self._stop_release: set[str] = set()  # held axes this stop releases (parked, or their drive is gone)
+        self._resumed = -math.inf  # end of the last blocking hardware call; sample age counts from here at most
+        self._dropped: frozenset[str] = frozenset()
+        self._drop_since: dict[str, float] = {}
+        self._dropped_reported: set[str] = set()
+        self._abort_park = threading.Event()
         self._arm_req: _Request | None = None
         self._setpoint_req: _Request | None = None
         self._closing = False
@@ -145,12 +151,17 @@ class Node:
         self._event_thread.start()
         self._thread.start()
 
-    def close(self, timeout: float = 30.0) -> None:
+    def close(self, timeout: float = 120.0) -> None:
         with self.lock:
             self._closing = True
             self._wake.notify_all()
-        if self._thread.is_alive():
-            self._thread.join(timeout)
+        end = time.monotonic() + timeout
+        try:
+            while self._thread.is_alive() and time.monotonic() < end:
+                self._thread.join(0.2)
+        except KeyboardInterrupt:  # a second Ctrl+C cuts the shutdown park short; held axes stay enabled
+            self._abort_park.set()
+            self._thread.join(15.0)
         if self.mocap:
             self.mocap.close()
         self._events.put(None)
@@ -210,8 +221,8 @@ class Node:
         now = self.clock()
         moving = any(abs(t - self.position[n]) > self.axes[n].tolerance for n, t in self.target.items()
                      if math.isfinite(self.position[n]))
-        state = ("fault" if self.fault else "moving" if moving else
-                 ("armed" if self.lease else "holding") if self.backend.active else "idle")
+        state = ("fault" if self.fault else "parking" if self.lease and self.lease["mode"] == "park" else
+                 "moving" if moving else ("armed" if self.lease else "holding") if self.backend.active else "idle")
         lease, job = self.lease, self.job
         age = now - self.sample_time if math.isfinite(self.sample_time) else math.nan
         return {
@@ -434,17 +445,70 @@ class Node:
         with self.lock:
             if not self.fault:
                 return self._snapshot()
-            request = self._request_stop(f"reset:{user}", force=True, revoke=True)
+            # A held axis whose drive dropped out holds nothing any more, so the reset lets it go.
+            request = self._request_stop(f"reset:{user}", force=True, revoke=True, release=self._dropped & self.held)
         self._await(request)
         with self.lock:
-            if self.backend.active:
+            if self._unsettled():
                 raise Rejected("axes are still active", 409)
             cleared, self.fault = self.fault, None
+            self._dropped_reported.clear()
             self.reason = f"reset:{user}"
             self.revision += 1
             snapshot = self._snapshot()
         self._event("reset", f"{user} cleared: {cleared}")
         return snapshot
+
+    def park(self, user: str) -> dict[str, Any]:
+        """Drives the held axes to their park positions, then releases them; they rest there unpowered."""
+        s = self.settings
+        with self.lock:
+            self._expire()
+            if not self.backend.allow_motion:
+                raise Rejected("node is read-only", 409)
+            if self.fault:
+                raise Rejected(f"node is faulted: {self.fault}", 409)
+            if self.lease:
+                raise Rejected(f"control is held by {self.lease['owner']}", 409)
+            if self._stop_req:
+                raise Rejected("a stop is in progress", 409)
+            if self.feedback_error:
+                raise Rejected(f"hardware feedback is unavailable: {self.feedback_error}", 503)
+            names = self._parkable()
+            if not names:
+                return {"status": "idle", "axes": []}
+            now = self.clock()
+            goal = {n: self.axes[n].park for n in names}
+            speeds = {n: self.axes[n].park_speed for n in names}
+            self.lease = {"id": secrets.token_urlsafe(24), "owner": user, "mode": "park", "axes": names,
+                          "period_s": s.task_refresh_s, "timeout_s": s.max_timeout_s, "expires": math.inf,
+                          "armed": True, "created": now}
+            self.job = {"id": uuid.uuid4().hex, "status": "running", "waypoint": 0, "count": 1,
+                        "points": [(goal, speeds)], "started": now, "reason": None, "refreshed": -math.inf,
+                        "dirty": True, "arrivals": 0, "checked_sample": self.sample_seq, "park": names}
+            self.reason = "park"
+            self.revision += 1
+            self._wake.notify_all()
+            job_id = self.job["id"]
+        self._event("park", f"{user} parks {' '.join(names)}")
+        return {"task_id": job_id, "status": "running", "axes": names}
+
+    def _sustained(self, since: dict[str, float], dropped: frozenset[str], now: float) -> frozenset[str]:
+        """The drives whose enabled report has been missing for drive_dropout_s."""
+        for name in list(since):
+            if name not in dropped:
+                del since[name]
+        for name in dropped:
+            since.setdefault(name, now)
+        return frozenset(n for n, t in since.items() if now - t >= self.settings.drive_dropout_s)
+
+    def _parkable(self) -> list[str]:
+        armed = set(getattr(self.backend, "armed", ()))
+        return sorted(n for n in self.held if n in armed and self.axes[n].park is not None)
+
+    def _unsettled(self) -> bool:
+        """True while any axis other than a held one is still active."""
+        return bool(self.backend.active and set(getattr(self.backend, "armed", ())) - self.held)
 
     def _await(self, request: _Request, timeout: float | None = None) -> Any:
         if not request.done.wait(self.settings.wait_s if timeout is None else timeout):
@@ -455,12 +519,14 @@ class Node:
 
     # supervision (caller holds the lock)
 
-    def _request_stop(self, reason: str, force: bool, revoke: bool, fault: str | None = None) -> _Request:
+    def _request_stop(self, reason: str, force: bool, revoke: bool, fault: str | None = None,
+                      release: frozenset[str] | set[str] = frozenset()) -> _Request:
         if fault and not self.fault:
             self.fault = fault
             self._event("fault", fault)
-        # Held axes stay enabled through an ordinary stop; a fault disables everything.
-        self._stop_full = self._stop_full or bool(self.fault)
+        # Held axes stay enabled through every stop, faults included: unpowered they would fall. Only parking
+        # (or a drive that is already gone) releases them.
+        self._stop_release.update(release)
         self.reason = reason
         self.stream_deadline = None
         if self.job and self.job["status"] == "running":
@@ -482,10 +548,16 @@ class Node:
         target = self.target.get(name)
         return target is None or abs(target - self.position[name]) <= self.axes[name].tolerance
 
-    def _progress_step(self, name: str) -> float:
+    def _progress_step(self, name: str, speed: float | None = None) -> float:
         axis = self.axes[name]
-        expected = 0.5 * self.speed.get(name, 0.0) * self.settings.stall_timeout_s
+        expected = 0.5 * (self.speed.get(name, 0.0) if speed is None else speed) * self.settings.stall_timeout_s
         return max(2 * axis.resolution, min(axis.tolerance, expected) if expected > 0 else axis.tolerance)
+
+    def _carrot(self, name: str, here: float, goal: float, speed: float) -> float:
+        """A target at most task_lead_s of travel ahead, within the limits even if the axis rests outside them."""
+        reach = speed * self.settings.task_lead_s
+        carrot = goal if abs(goal - here) <= reach else here + math.copysign(reach, goal - here)
+        return min(max(carrot, self.axes[name].minimum), self.axes[name].maximum)
 
     def _expire(self) -> None:
         now = self.clock()
@@ -503,12 +575,13 @@ class Node:
     def _monitor(self) -> None:
         # Control thread only, right after a poll, so slow hardware calls never age the sample it judges.
         now, s = self.clock(), self.settings
-        if self.fault and self.backend.active and not self._stop_req and now >= self._next_stop_retry:
+        if self.fault and self._unsettled() and not self._stop_req and now >= self._next_stop_retry:
             self._next_stop_retry = now + s.stop_retry_s
             self._request_stop("stop_retry", force=True, revoke=True)
-        if not self.backend.active or self._stop_req:
+        if not self.backend.active or self._stop_req or self.fault:
             return
-        if not math.isfinite(self.sample_time) or now - self.sample_time > s.max_sample_age_s:
+        fresh = max(self.sample_time if math.isfinite(self.sample_time) else -math.inf, self._resumed)
+        if now - fresh > s.max_sample_age_s:
             cause = self.feedback_error or "no new sample"
             self._request_stop("feedback_lost", force=True, revoke=True,
                                fault=f"FEEDBACK_LOST: {cause} (no position for {s.max_sample_age_s:g} s)")
@@ -534,7 +607,11 @@ class Node:
                     job["arrivals"] = 0
                     if job["waypoint"] == job["count"]:
                         job["status"] = "completed"
-                        self._event("task", "task completed")
+                        if job.get("park"):
+                            self._event("park", f"{' '.join(job['park'])} parked; releasing them")
+                            self._request_stop("parked", force=False, revoke=True, release=job["park"])
+                        else:
+                            self._event("task", "task completed")
                     else:
                         job["dirty"] = True
                     self.revision += 1
@@ -545,6 +622,7 @@ class Node:
         return bool(self._stop_req or self._arm_req or self._setpoint_req)
 
     def _run(self) -> None:
+        self._adopt()
         while True:
             with self.lock:
                 while not self._closing and not self._pending() and self.clock() < self._next_poll:
@@ -600,6 +678,12 @@ class Node:
             if self.feedback_error and self.feedback_error != "no sample yet":
                 self._event("feedback", "restored")
             self.feedback_error = None
+            dropped = self._sustained(self._drop_since, frozenset(sample.dropped), sample.time)
+            fresh_drop = dropped - self._dropped_reported
+            self._dropped, self._dropped_reported = dropped, (self._dropped_reported & dropped) | fresh_drop
+            if fresh_drop and self.backend.active:
+                self._request_stop("drive_lost", force=True, revoke=True,
+                                   fault=f"DRIVE_DISABLED: {' '.join(sorted(dropped))} no longer reports enabled")
             for name, value in sample.positions.items():
                 mark = self._progress.get(name)
                 if mark is None or abs(value - mark[1]) >= self._progress_step(name):
@@ -625,16 +709,17 @@ class Node:
     def _service_stop(self) -> None:
         # Detach the request first: a stop asked for while this one runs gets its own pass.
         with self.lock:
-            request, force, full = self._stop_req, self._stop_force, self._stop_full
-            self._stop_req, self._stop_force, self._stop_full = None, False, False
+            request, force, release = self._stop_req, self._stop_force, self._stop_release
+            self._stop_req, self._stop_force, self._stop_release = None, False, set()
         if request is None:
             return
         try:
-            self.backend.stop(force=force, keep=frozenset() if full else self.held)
+            self.backend.stop(force=force, keep=self.held - release)
             error = None
         except Exception as exc:
             error = exc
         with self.lock:
+            self._resumed = self.clock()
             self.target.clear()
             self.speed.clear()
             self.armed = set(getattr(self.backend, "armed", ())) if self.backend.active else set()
@@ -656,10 +741,12 @@ class Node:
             self.backend.arm(request.payload)
         except Exception as exc:
             with self.lock:
+                self._resumed = self.clock()
                 self._request_stop("arm_failed", force=True, revoke=True)
             request.finish(error=Rejected(f"arming failed: {exc}", 503))
             return
         with self.lock:
+            self._resumed = self.clock()  # arming blocks polling, enabling a drive can take seconds
             self.armed.update(request.payload)
             self.revision += 1
         request.finish(True)
@@ -702,12 +789,7 @@ class Node:
             now = self.clock()
             if not job["dirty"] and now - job["refreshed"] < s.task_refresh_s:
                 return
-            targets = {}
-            for name, value in goal.items():
-                here, reach = self.position[name], speeds[name] * s.task_lead_s
-                carrot = value if abs(value - here) <= reach else here + math.copysign(reach, value - here)
-                axis = self.axes[name]
-                targets[name] = min(max(carrot, axis.minimum), axis.maximum)  # an axis may sit outside its limits
+            targets = {n: self._carrot(n, self.position[n], v, speeds[n]) for n, v in goal.items()}
             unchanged = all(abs(targets[n] - self.target.get(n, math.inf)) <= 0.5 * self.axes[n].tolerance
                             and speeds[n] == self.speed.get(n) for n in targets)
             job["refreshed"] = now
@@ -720,17 +802,103 @@ class Node:
             with self.lock:
                 self._request_stop("command_failed", force=True, revoke=True, fault=f"COMMAND_FAILED: {exc}")
 
+    def _adopt(self) -> None:
+        """Held axes still enabled from an earlier run (a park that was cut short) are held again, not dropped."""
+        if not self.held or not self.backend.allow_motion or not hasattr(self.backend, "adopt"):
+            return
+        try:
+            found = self.backend.adopt(sorted(self.held))
+        except Exception as exc:
+            self._event("hold", f"cannot check whether {' '.join(sorted(self.held))} are enabled: {exc}")
+            return
+        if found:
+            with self.lock:
+                self.armed.update(found)
+                self.reason = "adopted"
+                self.revision += 1
+            self._event("hold", f"{' '.join(found)} were still enabled; holding them")
+
     def _shutdown(self) -> None:
         with self.lock:
             for pending in (self._arm_req, self._setpoint_req, self._stop_req):
                 if pending:
                     pending.finish(error=Rejected("node is shutting down", 503))
             self.lease = None
+            if self.job and self.job["status"] == "running":
+                self.job["status"], self.job["reason"] = "stopped", "shutdown"
+        parked = self._park_for_shutdown()
+        keep = self.held - parked
         try:
-            self.backend.stop(force=False)
+            self.backend.stop(force=False, keep=keep)
         except Exception as exc:
             self._event("fault", f"STOP_UNCONFIRMED at shutdown: {exc}")
+        left = sorted(set(getattr(self.backend, "armed", ())) & keep)
+        if left:
+            self._event("hold", f"{' '.join(left)} stay enabled where they are")
         try:
             self.backend.close()
         except Exception:
             pass
+
+    def _park_for_shutdown(self) -> frozenset[str]:
+        """Drives the held axes to their park positions on the control thread; on any trouble they keep holding."""
+        names = self._parkable() if self.backend.allow_motion else []
+        if not names:
+            return frozenset()
+        s = self.settings
+        goal = {n: self.axes[n].park for n in names}
+        speeds = {n: self.axes[n].park_speed for n in names}
+        self._event("park", f"parking {' '.join(names)} before shutdown (second Ctrl+C: stop and keep holding)")
+        reason = None
+        try:
+            sample = self.backend.read()
+        except Exception as exc:
+            sample, reason = None, f"no feedback: {exc}"
+        if sample is not None:
+            now = self.clock()
+            travel = max(abs(goal[n] - sample.positions[n]) / speeds[n] for n in names)
+            deadline = now + travel + 10.0 * s.stall_timeout_s
+            marks = {n: (now, sample.positions[n]) for n in names}
+            arrivals, last_command, since = 0, -math.inf, {}
+            while reason is None:
+                here, now = sample.positions, self.clock()
+                lost = sorted(self._sustained(since, frozenset(sample.dropped) & set(names), now))
+                if self._abort_park.is_set():
+                    reason = "interrupted"
+                elif lost:
+                    reason = f"{' '.join(lost)} no longer enabled"
+                elif now > deadline:
+                    reason = "timed out"
+                if reason:
+                    break
+                arrived = all(abs(goal[n] - here[n]) <= self.axes[n].tolerance for n in names)
+                arrivals = arrivals + 1 if arrived else 0
+                if arrivals >= s.arrival_samples:
+                    self._event("park", f"{' '.join(names)} parked")
+                    return frozenset(names)
+                for n in names:
+                    if abs(here[n] - marks[n][1]) >= self._progress_step(n, speeds[n]):
+                        marks[n] = (now, here[n])
+                    elif abs(goal[n] - here[n]) > self.axes[n].tolerance and now - marks[n][0] > s.stall_timeout_s:
+                        reason = f"{n} made no progress"
+                if reason:
+                    break
+                if now - last_command >= s.task_refresh_s:
+                    targets = {n: self._carrot(n, here[n], goal[n], speeds[n]) for n in names}
+                    try:
+                        self.backend.command(targets, speeds)
+                    except Exception as exc:
+                        reason = f"command failed: {exc}"
+                        break
+                    last_command = now
+                time.sleep(s.poll_s)
+                try:
+                    sample = self.backend.read()
+                except Exception as exc:
+                    reason = f"no feedback: {exc}"
+        self._event("park", f"parking stopped ({reason}); {' '.join(names)} keep holding")
+        try:
+            self.backend.stop(force=True, keep=self.held)
+        except Exception as exc:
+            self._event("fault", f"STOP_UNCONFIRMED while parking: {exc}")
+        return frozenset()

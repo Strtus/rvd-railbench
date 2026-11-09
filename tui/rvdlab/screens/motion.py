@@ -12,7 +12,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Footer, Input, Static
 
 from ..config import Vec3, envelope_violations, hill_to_rail, rail_to_hill
-from ..remote import AXES, connect, move
+from ..remote import AXES, connect, held_axes, level, move, park
 from .base import DIM, Page, heading
 from .node_view import ConfirmModal, node_view
 from .overview import axis_table, mapping_table
@@ -52,6 +52,10 @@ class MotionScreen(Page):
                 yield Button("Move by", id="node-move-by", compact=True)
                 yield Button("Move to Rail [m]", id="node-move-to", compact=True)
                 yield Button("Stop rail  F9", id="node-stop", compact=True)
+            with Horizontal(classes="button-row"):
+                yield Button("Level platform", id="node-level", compact=True)
+                yield Button("Park platform", id="node-park", compact=True)
+                yield Button("Reset fault", id="node-reset", compact=True)
             yield Static(id="node-message", classes="context")
         yield Footer()
 
@@ -239,6 +243,71 @@ class MotionScreen(Page):
         except Exception as error:
             status = f"failed: {error}"
         self.app.call_from_thread(self.say, f"move {status}")
+
+    def held(self) -> dict[str, Any] | None:
+        if self.node is None or self.state is None or self.capabilities is None:
+            self.notify("The rail node is not connected", severity="warning")
+            return None
+        axes = held_axes(self.capabilities)
+        if not axes:
+            self.notify("This node has no held axes", severity="warning")
+        return axes or None
+
+    @on(Button.Pressed, "#node-level")
+    def level_platform(self) -> None:
+        axes = self.held()
+        if axes is None:
+            return
+        lines = [f"{n}: {self.state['position'].get(n):.4f} -> 0 rad at "
+                 f"{a.get('park_speed') or 0.2 * a['max_speed']:g} rad/s" for n, a in axes.items()]
+        text = ("Level the platform on the real rail.\n" + "\n".join(lines)
+                + "\n\nThe node keeps holding it there. F9 stops it.")
+        self.app.push_screen(ConfirmModal("Level the platform", text, "Level"),
+                             lambda ok: self.run_held(level, "level") if ok else None)
+
+    @on(Button.Pressed, "#node-park")
+    def park_platform(self) -> None:
+        axes = self.held()
+        if axes is None:
+            return
+        lines = [f"{n}: {self.state['position'].get(n):.4f} -> {a['park']:g} rad" for n, a in axes.items()
+                 if a.get("park") is not None]
+        text = ("Park the platform: it moves slowly to its rest position and is then released.\n"
+                + "\n".join(lines) + "\n\nRelease it only where it can rest unpowered. F9 stops it.")
+        self.app.push_screen(ConfirmModal("Park the platform", text, "Park"),
+                             lambda ok: self.run_held(park, "park") if ok else None)
+
+    @work(thread=True, exclusive=True, group="node-move")
+    def run_held(self, action: Any, name: str) -> None:
+        self.cancel = threading.Event()
+        self.app.call_from_thread(self.say, f"{name} ...")
+        try:
+            status = action(connect(self.node_path), self.cancel)  # type: ignore[arg-type]
+        except Exception as error:
+            status = f"failed: {error}"
+        self.app.call_from_thread(self.say, f"{name} {status}")
+
+    @on(Button.Pressed, "#node-reset")
+    def reset_fault(self) -> None:
+        if self.node is None or self.state is None:
+            self.notify("The rail node is not connected", severity="warning")
+            return
+        if not self.state.get("fault"):
+            self.say("no fault to reset")
+            return
+        text = (f"Clear the fault:\n{self.state['fault']}\n\n"
+                "Do this only once its cause is fixed. Clearing it moves nothing.")
+        self.app.push_screen(ConfirmModal("Reset the fault", text, "Reset"),
+                             lambda ok: self.run_reset() if ok else None)
+
+    @work(thread=True, group="node-stop")
+    def run_reset(self) -> None:
+        try:
+            state = connect(self.node_path).reset()  # type: ignore[arg-type]
+            message = f"reset · {state['state']}" + (f" · fault {state['fault']}" if state["fault"] else "")
+        except Exception as error:
+            message = f"reset failed: {error}"
+        self.app.call_from_thread(self.say, message)
 
     @on(Button.Pressed, "#node-stop")
     def action_node_stop(self) -> None:
