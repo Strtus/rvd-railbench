@@ -87,7 +87,9 @@ class NodeClient:
             raise NodeError(f"node speaks {result.get('protocol')!r}, this client needs {PROTOCOL}")
         return result
 
-    def state(self) -> dict[str, Any]:
+    def state(self, fresh: bool = False) -> dict[str, Any]:
+        if fresh:
+            return self.request("GET", "/v1/state?fresh=1", timeout=10)
         return self.request("GET", "/v1/state")
 
     def clock(self) -> float:

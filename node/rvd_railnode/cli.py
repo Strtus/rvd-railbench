@@ -10,6 +10,7 @@ import re
 import secrets
 import shutil
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -239,6 +240,64 @@ def reset(args: argparse.Namespace) -> int:
     return 0
 
 
+def _assignments(items: list[str], option: str) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for item in items:
+        name, sep, text = item.partition("=")
+        name = name.strip()
+        try:
+            value = float(text)
+        except ValueError:
+            value = math.nan
+        if not sep or not name or not math.isfinite(value):
+            raise CliError(f"{option} expects AXIS=NUMBER, not {item!r}")
+        if name in result:
+            raise CliError(f"{name} is given twice")
+        result[name] = value
+    return result
+
+
+def move(args: argparse.Namespace) -> int:
+    to, by = _assignments(args.to, "--to"), _assignments(args.by, "--by")
+    if not to and not by:
+        raise CliError("give --to AXIS=VALUE or --by AXIS=DELTA")
+    if set(to) & set(by):
+        raise CliError("an axis cannot take both --to and --by")
+    client = _client(args)
+    state = client.state(fresh=True)
+    if state["sensors"]["encoders"]["error"]:
+        raise CliError(f"no position feedback: {state['sensors']['encoders']['error']}")
+    goal = dict(to)
+    for name, delta in by.items():
+        if state["position"].get(name) is None:
+            raise CliError(f"the node has no axis {name}")
+        goal[name] = state["position"][name] + delta
+    client.acquire("task", list(goal), period_s=1.0)
+    try:
+        client.task([{"position": goal, "speed": args.speed}])
+        shown = -math.inf
+        while True:
+            state = client.state()
+            job = state["job"] or {}
+            if time.monotonic() - shown >= 1.0 or job.get("status") != "running":
+                shown = time.monotonic()
+                print("  ".join(f"{n} {_value(state['position'].get(n))}" for n in goal), flush=True)
+            if job.get("status") != "running":
+                break
+            time.sleep(0.2)
+        if job.get("status") != "completed":
+            cause = job.get("reason") or state.get("fault") or state.get("reason")
+            raise CliError(f"move {job.get('status', 'lost')}: {cause}")
+    except KeyboardInterrupt:
+        client.stop()
+        print("stopped", file=sys.stderr)
+        raise
+    finally:
+        client.release()
+    print("arrived")
+    return 0
+
+
 def serve(args: argparse.Namespace) -> int:
     from .server import serve as run
 
@@ -271,6 +330,13 @@ def parser() -> argparse.ArgumentParser:
         if name == "status":
             p.add_argument("--json", action="store_true")
         p.set_defaults(run=run)
+    p = sub.add_parser("move", help="move axes to a position (--to) or by an offset (--by), then release them")
+    p.add_argument("--config", type=Path, help="node.json of the node on this computer")
+    p.add_argument("--connection", type=Path, help="connection.json of a user")
+    p.add_argument("--to", nargs="+", default=[], metavar="AXIS=VALUE")
+    p.add_argument("--by", nargs="+", default=[], metavar="AXIS=DELTA")
+    p.add_argument("--speed", type=float, required=True, help="speed of every moving axis (m/s or rad/s)")
+    p.set_defaults(run=move)
     for name, text, run in (("add-user", "give a new person access", add_user),
                             ("remove-user", "revoke a person's access", remove_user)):
         p = sub.add_parser(name, help=text)

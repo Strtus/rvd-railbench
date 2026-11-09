@@ -4,6 +4,7 @@ import json
 import re
 import socket
 import threading
+from contextlib import contextmanager
 
 import pytest
 from conftest import ROOT, sim_profile, wait_for
@@ -67,27 +68,45 @@ def test_users_can_be_added_and_removed(initialized):
     assert not (root / "access" / "carol").exists()
 
 
-def test_status_and_stop_reach_the_local_node(initialized, capsys):
-    root, _ = initialized
+@contextmanager
+def running(root, allow_motion=False):
     config_path = root / "node.json"
     config = json.loads(config_path.read_text())
     config["host"] = "127.0.0.1"
     config_path.write_text(json.dumps(config))
-    server = build(load_config(config_path))
+    server = build(load_config(config_path), allow_motion)
     server.node.start()
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
         wait_for(lambda: server.node.snapshot()["sensors"]["encoders"]["ok"])
+        yield config_path, server.node
+    finally:
+        server.shutdown()
+        server.node.close()
+        server.server_close()
+
+
+def test_status_and_stop_reach_the_local_node(initialized, capsys):
+    with running(initialized[0]) as (config_path, _):
         assert main(["status", "--config", str(config_path)]) == 0
         out = capsys.readouterr().out
         assert "simulator" in out and "read-only" in out and re.search(r"^x\s+0\.000000", out, re.M)
         assert main(["stop", "--config", str(config_path)]) == 0
         assert "stopped" in capsys.readouterr().out
-    finally:
-        server.shutdown()
-        server.node.close()
-        server.server_close()
+
+
+def test_move_goes_there_and_releases_control(initialized, capsys):
+    with running(initialized[0], allow_motion=True) as (config_path, node):
+        assert main(["move", "--config", str(config_path), "--by", "x=0.02", "z=-0.01", "--speed", "0.1"]) == 0
+        assert "arrived" in capsys.readouterr().out
+        state = node.snapshot()
+        assert state["position"]["x"] == pytest.approx(0.02, abs=0.001)
+        assert state["position"]["z"] == pytest.approx(-0.01, abs=0.001)
+        assert state["control"] is None and not node.backend.active
+        assert main(["move", "--config", str(config_path), "--to", "x=1", "--by", "x=0.1", "--speed", "0.1"]) == 2
+        assert main(["move", "--config", str(config_path), "--by", "x=0.1", "--speed", "9"]) == 2
+        assert "speed 9 is outside" in capsys.readouterr().err
 
 
 def test_probe_reads_once_and_prints_positions(tmp_path, capsys):

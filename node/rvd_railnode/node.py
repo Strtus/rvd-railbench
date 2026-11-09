@@ -104,6 +104,8 @@ class Node:
         self.sample_time = math.nan
         self.sample_duration = math.nan
         self.feedback_error: str | None = "no sample yet"
+        self.sample_seq = 0
+        self.polled_at = -math.inf
         self.target: dict[str, float] = {}
         self.speed: dict[str, float] = {}
         self.armed: set[str] = set()
@@ -164,8 +166,16 @@ class Node:
             "sensors": ["encoders"],
         }
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, fresh: bool = False) -> dict[str, Any]:
         with self.lock:
+            if fresh:  # poll now and answer with a sample taken after the request arrived
+                asked = self.clock()
+                self._next_poll = -math.inf
+                self._wake.notify_all()
+                end = asked + self.settings.wait_s
+                while not self._closing and self.clock() < end and not (
+                        self.sample_time >= asked or (self.feedback_error and self.polled_at >= asked)):
+                    self._wake.wait(end - self.clock())
             return self._snapshot()
 
     def _snapshot(self) -> dict[str, Any]:
@@ -196,6 +206,7 @@ class Node:
                 "sample_time": _finite_or_none(self.sample_time),
                 "age_s": _finite_or_none(age),
                 "read_s": _finite_or_none(self.sample_duration),
+                "seq": self.sample_seq,
                 "values": {n: _finite_or_none(v) for n, v in self.position.items()},
             }},
             "control": None if lease is None else {
@@ -534,6 +545,8 @@ class Node:
         except Exception as exc:
             sample, error = None, exc
         with self.lock:
+            self.polled_at = self.clock()
+            self._wake.notify_all()
             self.device = dict(self.backend.status)
             if sample is None:
                 message = str(error) or type(error).__name__
@@ -554,6 +567,7 @@ class Node:
                     self._progress[name] = (sample.time, value)
                 self.position[name] = value
             self.sample_time, self.sample_duration = sample.time, sample.duration
+            self.sample_seq += 1
             self.revision += 1
 
     def _command(self, targets: dict[str, float], speeds: dict[str, float]) -> float:

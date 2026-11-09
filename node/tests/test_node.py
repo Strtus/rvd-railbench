@@ -261,3 +261,13 @@ def test_settings_reject_a_lead_beyond_the_horizon():
         Settings.from_profile({}, {"task_lead_s": 5.0, "horizon_s": 3.0})
     with pytest.raises(ValueError, match="unknown"):
         Settings.from_profile({}, {"speed_of_light": 1.0})
+
+
+def test_a_fresh_snapshot_polls_at_once(make_node):
+    node = make_node(poll_s=5.0)
+    before = node.snapshot()["sensors"]["encoders"]["seq"]
+    asked = node.clock()
+    state = node.snapshot(fresh=True)
+    assert state["sensors"]["encoders"]["sample_time"] >= asked
+    assert state["sensors"]["encoders"]["seq"] == before + 1
+    assert node.clock() - asked < 1.0

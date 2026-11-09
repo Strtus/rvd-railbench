@@ -14,7 +14,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
 from .backend import create as create_backend
@@ -118,7 +118,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
     def _dispatch(self) -> None:
-        user, status, path = None, 200, urlsplit(self.path).path
+        parts = urlsplit(self.path)
+        user, status, path = None, 200, parts.path
         try:
             header = self.headers.get("Authorization", "")
             if not header.startswith("Bearer "):
@@ -129,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
             node = self.server.node
             if self.command == "GET":
                 if path == "/v1/state":
-                    result = node.snapshot()
+                    result = node.snapshot(fresh=parse_qs(parts.query).get("fresh") == ["1"])
                 elif path == "/v1/capabilities":
                     result = node.capabilities()
                 elif path == "/v1/clock":
