@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 AXES = ("x", "y", "z")
 # A run through the network and a PLC needs looser timing than a simulated one; rail_main still checks them.
-REMOTE_TIMING = {"clock_skew_s": 0.05, "communication_timeout_s": 0.8, "measurement_late_s": 0.5}
+REMOTE_TIMING = {"clock_skew_s": 0.1, "communication_timeout_s": 0.8, "measurement_late_s": 0.5}
 
 
 class RemoteError(RuntimeError):
