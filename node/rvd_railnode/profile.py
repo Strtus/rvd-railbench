@@ -37,6 +37,7 @@ class Axis:
     tolerance: float
     resolution: float
     motion: bool
+    hold: bool = False
 
     @property
     def unit(self) -> str:
@@ -56,6 +57,7 @@ class Axis:
             "tolerance": self.tolerance,
             "resolution": self.resolution,
             "motion": self.motion,
+            "hold": self.hold,
         }
 
 
@@ -121,6 +123,8 @@ def _modbus(profile: dict[str, Any]) -> None:
         for key in ("quickstop_m", "pending_d", "sample_count_d"):
             if key in axis:
                 _integer(axis[key], f"{name}.{key}")
+        if axis.get("hold") and kind != "servo":
+            raise ProfileError(f"{name}: only servo axes can hold their position")
         if axis["min_count"] >= axis["max_count"]:
             raise ProfileError(f"{name}: min_count must be below max_count")
         if _finite(axis.get("scale"), f"{name}.scale") == 0:
@@ -196,8 +200,9 @@ def validate(profile: Any) -> dict[str, Any]:
         _object(axis, name)
         _positive(axis.get("max_speed"), f"{name}.max_speed")
         _positive(axis.get("tolerance"), f"{name}.tolerance")
-        if not isinstance(axis.get("motion", True), bool):
-            raise ProfileError(f"{name}.motion must be true or false")
+        for key in ("motion", "hold"):
+            if not isinstance(axis.get(key, key == "motion"), bool):
+                raise ProfileError(f"{name}.{key} must be true or false")
     for key in TIMINGS:
         if key in profile:
             _positive(profile[key], key)
@@ -228,5 +233,5 @@ def axes(profile: dict[str, Any]) -> dict[str, Axis]:
         else:
             lo, hi, resolution = float(spec["minimum"]), float(spec["maximum"]), float(spec.get("resolution", 1e-6))
         result[name] = Axis(name, lo, hi, float(spec["max_speed"]), float(spec["tolerance"]), resolution,
-                            spec.get("motion", True))
+                            spec.get("motion", True), spec.get("hold", False))
     return result

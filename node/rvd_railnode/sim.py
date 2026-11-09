@@ -93,16 +93,19 @@ class SimBackend:
             self.target[name], self.speed[name] = float(value), float(speeds[name])
         self.commands += 1
 
-    def stop(self, force: bool = False) -> None:
+    def stop(self, force: bool = False, keep: frozenset[str] | set[str] = frozenset()) -> None:
         if not self.allow_motion or not (self.active or force):
             return
         if self.fail_stop:
             raise BackendError("simulated stop failure")
         self._advance()
+        holding = self.armed & set(keep)
         for name in self.axes:
-            self.target[name], self.velocity[name], self.speed[name] = self.position[name], 0.0, 0.0
-        self.armed.clear()
-        self.active = False
+            self.target[name], self.velocity[name] = self.position[name], 0.0
+            if name not in holding:
+                self.speed[name] = 0.0
+        self.armed = holding
+        self.active = bool(holding)
 
     def close(self) -> None:
         self.stop()

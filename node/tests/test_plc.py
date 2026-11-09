@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import copy
 import struct
 
 import pytest
 
 from rvd_railnode.backend import InterlockError
 from rvd_railnode.plc import Modbus, ModbusError, PlcBackend
-from rvd_railnode.profile import validate
+from rvd_railnode.profile import ProfileError, validate
 
 # Synthetic register map; it does not describe any real installation.
 PROFILE = validate({
@@ -294,3 +295,25 @@ def test_an_exception_reply_keeps_the_link_but_a_timeout_reconnects():
     assert not modbus.connected
     modbus.read_d(1)
     assert modbus.connected and len(connects) == 2
+
+
+def test_a_held_servo_stays_enabled_where_it_stopped():
+    plc = FakePlc()
+    plc_backend = backend(plc)
+    plc_backend.arm(["x", "z"])
+    plc_backend.command({"x": 0.25, "z": 0.02}, {"x": 0.1, "z": 0.01})
+    plc.d[22] = 51500  # the servo is on its way
+    plc.writes.clear()
+    plc_backend.stop(keep={"z"})
+    assert plc.d[23] == 1 and plc.d[20] == 51500 and plc.d[21] != 0
+    assert plc_backend.armed == {"z"} and plc_backend.active
+    assert ("m", 3, False) in plc.writes and ("m", 50, False) not in plc.writes
+    plc_backend.stop()
+    assert plc.d[23] == 0 and not plc_backend.active
+
+
+def test_only_servo_axes_may_hold():
+    profile = copy.deepcopy(PROFILE)
+    profile["axes"]["x"]["hold"] = True
+    with pytest.raises(ProfileError, match="only servo"):
+        validate(profile)

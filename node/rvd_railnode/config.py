@@ -21,6 +21,7 @@ class NodeConfig:
     audit: Path | None
     allow_motion: bool
     settings: dict[str, Any]
+    remote_reset: bool = False
 
     @property
     def directory(self) -> Path:
@@ -50,8 +51,9 @@ def load(path: str | Path) -> NodeConfig:
     for key in ("address", "host"):
         if not isinstance(data.get(key, ""), str):
             raise ValueError(f"{path}: {key} must be a string")
-    if not isinstance(data.get("allow_motion", False), bool):
-        raise ValueError(f"{path}: allow_motion must be true or false")
+    for key in ("allow_motion", "remote_reset"):
+        if not isinstance(data.get(key, False), bool):
+            raise ValueError(f"{path}: {key} must be true or false")
     if not isinstance(data.get("settings", {}), dict):
         raise ValueError(f"{path}: settings must be an object")
     tls_cert, tls_key = file("tls_cert", False), file("tls_key", False)
@@ -59,7 +61,7 @@ def load(path: str | Path) -> NodeConfig:
         raise ValueError(f"{path}: tls_cert and tls_key go together")
     return NodeConfig(path, data.get("address") or "127.0.0.1", data.get("host") or "127.0.0.1", port,
                       file("profile"), file("users"), tls_cert, tls_key, file("audit", False),
-                      data.get("allow_motion", False), dict(data.get("settings", {})))
+                      data.get("allow_motion", False), dict(data.get("settings", {})), data.get("remote_reset", False))
 
 
 def url_host(address: str) -> str:

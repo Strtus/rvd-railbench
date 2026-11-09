@@ -134,7 +134,7 @@ def initialize(args: argparse.Namespace) -> int:
     _write(root / "node.json", json.dumps({
         "address": args.address, "host": "0.0.0.0", "port": args.port, "profile": "profile.json",
         "users": "users.json", "tls_cert": "node-cert.pem", "tls_key": "node-key.pem", "audit": "audit.jsonl",
-        "allow_motion": False}, indent=2) + "\n")
+        "allow_motion": False, "remote_reset": True}, indent=2) + "\n")
     _grant(root, LOCAL_USER, users[LOCAL_USER], f"https://127.0.0.1:{args.port}")
     for name in names:
         _grant(root, name, users[name], f"https://{url_host(args.address)}:{args.port}")
