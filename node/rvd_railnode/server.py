@@ -232,7 +232,12 @@ def build(config: NodeConfig, allow_motion: bool = False) -> NodeServer:
         raise ValueError("a listener reachable from other computers requires tls_cert and tls_key")
     tls = tls_context(config.tls_cert, config.tls_key) if config.tls_cert and config.tls_key else None
     backend = create_backend(profile, allow_motion or config.allow_motion)
-    server = NodeServer((config.host, config.port), Node(backend, settings), users, config.audit, tls)
+    mocap = None
+    if "mocap" in profile:
+        from .mocap import MocapReceiver
+
+        mocap = MocapReceiver(profile["mocap"])
+    server = NodeServer((config.host, config.port), Node(backend, settings, mocap=mocap), users, config.audit, tls)
     server.profile = profile
     return server
 
@@ -253,6 +258,8 @@ def serve(config: NodeConfig, allow_motion: bool = False, out: Callable[[str], N
         f"(listening on {config.host}:{config.port})")
     out(f"backend   {backend.name} · {where} · {'MOTION ENABLED' if motion else 'read-only'}")
     out(f"axes      {' '.join(n + ('' if a.motion else '(read)') for n, a in backend.axes.items())}")
+    if node.mocap:
+        out(f"mocap     vrpn://{node.mocap.host}:{node.mocap.port} · {' '.join(node.mocap.trackers)}")
     out(f"users     {' '.join(server.users.names())}")
     out("Ctrl+C stops the node and every axis it moved")
     server.audit(event="start", detail=f"{backend.name} motion={motion}")

@@ -91,8 +91,9 @@ class _Request:
 class Node:
     def __init__(self, backend: Any, settings: Settings | None = None,
                  clock: Callable[[], float] = time.monotonic,
-                 on_event: Callable[[str, str], None] | None = None) -> None:
+                 on_event: Callable[[str, str], None] | None = None, mocap: Any = None) -> None:
         self.backend = backend
+        self.mocap = mocap
         self.settings = settings or Settings()
         self.clock = clock
         self.on_event = on_event
@@ -131,6 +132,8 @@ class Node:
     # lifecycle
 
     def start(self) -> None:
+        if self.mocap:
+            self.mocap.start()
         self._thread.start()
 
     def close(self, timeout: float = 30.0) -> None:
@@ -139,6 +142,8 @@ class Node:
             self._wake.notify_all()
         if self._thread.is_alive():
             self._thread.join(timeout)
+        if self.mocap:
+            self.mocap.close()
 
     def _event(self, kind: str, detail: str) -> None:
         if self.on_event:
@@ -164,7 +169,10 @@ class Node:
             "max_timeout_s": s.max_timeout_s,
             "horizon_s": s.horizon_s,
             "task": {"lead_s": s.task_lead_s, "refresh_s": s.task_refresh_s, "max_points": MAX_WAYPOINTS},
-            "sensors": ["encoders"],
+            "sensors": ["encoders"] + (["mocap"] if self.mocap else []),
+            "mocap": None if not self.mocap else {
+                "source": f"vrpn://{self.mocap.host}:{self.mocap.port}", "trackers": list(self.mocap.trackers),
+                "rail_frame": [n for n, t in self.mocap.trackers.items() if "to_rail" in t]},
         }
 
     def snapshot(self, fresh: bool = False) -> dict[str, Any]:
@@ -208,7 +216,7 @@ class Node:
                 "read_s": _finite_or_none(self.sample_duration),
                 "seq": self.sample_seq,
                 "values": {n: _finite_or_none(v) for n, v in self.position.items()},
-            }},
+            }, **({"mocap": self.mocap.state()} if self.mocap else {})},
             "control": None if lease is None else {
                 "owner": lease["owner"], "mode": lease["mode"], "axes": list(lease["axes"]),
                 "armed": lease["armed"], "period_s": lease["period_s"], "timeout_s": lease["timeout_s"],
