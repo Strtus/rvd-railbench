@@ -237,12 +237,30 @@ def build(config: NodeConfig, allow_motion: bool = False) -> NodeServer:
         from .mocap import MocapReceiver
 
         mocap = MocapReceiver(profile["mocap"])
-    server = NodeServer((config.host, config.port), Node(backend, settings, mocap=mocap), users, config.audit, tls)
+    node = Node(backend, settings, mocap=mocap, remote_reset=config.remote_reset)
+    server = NodeServer((config.host, config.port), node, users, config.audit, tls)
     server.profile = profile
     return server
 
 
+def _console_quick_edit_off() -> None:
+    """A click in a Windows console with QuickEdit pauses every write to it until a key is pressed."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel.GetStdHandle(-10)
+        mode = ctypes.c_uint32()
+        if kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel.SetConsoleMode(handle, (mode.value | 0x80) & ~0x40)
+    except Exception:
+        pass
+
+
 def serve(config: NodeConfig, allow_motion: bool = False, out: Callable[[str], None] = print) -> int:
+    _console_quick_edit_off()
     server = build(config, allow_motion)
     node, backend, profile = server.node, server.node.backend, server.profile
 
@@ -260,7 +278,11 @@ def serve(config: NodeConfig, allow_motion: bool = False, out: Callable[[str], N
     out(f"axes      {' '.join(n + ('' if a.motion else '(read)') for n, a in backend.axes.items())}")
     if node.mocap:
         out(f"mocap     vrpn://{node.mocap.host}:{node.mocap.port} · {' '.join(node.mocap.trackers)}")
-    out(f"users     {' '.join(server.users.names())}")
+    remote = "  (faults can be reset remotely)" if node.remote_reset else ""
+    out(f"users     {' '.join(server.users.names())}{remote}")
+    held = [n for n, a in backend.axes.items() if a.hold]
+    if held:
+        out(f"holding   {' '.join(held)} stay enabled after an ordinary stop")
     out("Ctrl+C stops the node and every axis it moved")
     server.audit(event="start", detail=f"{backend.name} motion={motion}")
 

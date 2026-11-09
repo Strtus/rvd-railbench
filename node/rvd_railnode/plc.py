@@ -274,7 +274,7 @@ class PlcBackend:
             self.io.ensure(retry_now=True)
             return self.io.read_d(d)
 
-    def _confirm_stopped(self) -> dict[str, int]:
+    def _confirm_stopped(self, holding: set[str]) -> dict[str, int]:
         deadline = self._clock() + self.profile.get("stop_timeout_s", 5.0)
         last = {n: self._read_retrying(s["encoder_d"]) for n, s in self._spec.items()}
         stable = dict.fromkeys(self._spec, 0)
@@ -286,7 +286,7 @@ class PlcBackend:
                 stable[name] = stable[name] + 1 if abs(count - last[name]) <= 2 else 0
                 last[name] = count
                 ok = stable[name] >= 3
-                if ok and spec["type"] == "servo":
+                if ok and spec["type"] == "servo" and name not in holding:
                     ok = self._read_retrying(spec["enabled_d"]) == 0 and self._read_retrying(spec["closed_d"]) == 1
                     if ok and "pending_d" in spec:
                         ok = self._read_retrying(spec["pending_d"]) == 0
@@ -296,10 +296,12 @@ class PlcBackend:
             if self._clock() >= deadline:
                 raise ModbusError("stop was sent but not every axis confirmed standstill")
 
-    def stop(self, force: bool = False) -> None:
+    def stop(self, force: bool = False, keep: frozenset[str] | set[str] = frozenset()) -> None:
+        """Disables every axis except armed servo axes in keep, which stay enabled holding where they are."""
         if not self.allow_motion or not (self.active or force):
             return
-        pending, error = list(self._spec), ""
+        holding = {n for n in keep if n in self.armed and self._spec[n]["type"] == "servo"}
+        pending, error = [n for n in self._spec if n not in holding], ""
         for attempt in range(3):
             if attempt:
                 self._sleep(0.1 * attempt)
@@ -320,12 +322,16 @@ class PlcBackend:
                 break
         if pending:
             raise ModbusError(f"stop not delivered to {', '.join(pending)} ({error})")
-        last = self._confirm_stopped()
+        for name in holding:
+            spec = self._spec[name]
+            self.io.write_d(spec["target_d"], self._read_retrying(spec["encoder_d"]))
+        last = self._confirm_stopped(holding)
         for name, spec in self._spec.items():
             self.io.write_d(spec["target_d"], last[name])
-            self.io.write_d(spec["speed_d"], 0)
-        self.armed.clear()
-        self.active = False
+            if name not in holding:
+                self.io.write_d(spec["speed_d"], 0)
+        self.armed = set(holding)
+        self.active = bool(holding)
 
     def close(self) -> None:
         try:

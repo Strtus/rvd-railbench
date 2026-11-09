@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import queue
 import secrets
 import threading
 import time
@@ -91,13 +92,16 @@ class _Request:
 class Node:
     def __init__(self, backend: Any, settings: Settings | None = None,
                  clock: Callable[[], float] = time.monotonic,
-                 on_event: Callable[[str, str], None] | None = None, mocap: Any = None) -> None:
+                 on_event: Callable[[str, str], None] | None = None, mocap: Any = None,
+                 remote_reset: bool = False) -> None:
         self.backend = backend
         self.mocap = mocap
+        self.remote_reset = remote_reset
         self.settings = settings or Settings()
         self.clock = clock
         self.on_event = on_event
         self.axes: dict[str, Axis] = backend.axes
+        self.held = frozenset(n for n, a in self.axes.items() if a.hold)
         self.instance_id = uuid.uuid4().hex
         self.lock = threading.Lock()
         self._wake = threading.Condition(self.lock)
@@ -124,16 +128,21 @@ class Node:
         self._next_stop_retry = -math.inf
         self._stop_req: _Request | None = None
         self._stop_force = False
+        self._stop_full = False
         self._arm_req: _Request | None = None
         self._setpoint_req: _Request | None = None
         self._closing = False
         self._thread = threading.Thread(target=self._run, name="rail-node-control", daemon=True)
+        # Event output (console, audit) runs apart, so a stalled console never holds up control.
+        self._events: queue.SimpleQueue[tuple[str, str] | None] = queue.SimpleQueue()
+        self._event_thread = threading.Thread(target=self._dispatch_events, name="rail-node-events", daemon=True)
 
     # lifecycle
 
     def start(self) -> None:
         if self.mocap:
             self.mocap.start()
+        self._event_thread.start()
         self._thread.start()
 
     def close(self, timeout: float = 30.0) -> None:
@@ -144,11 +153,22 @@ class Node:
             self._thread.join(timeout)
         if self.mocap:
             self.mocap.close()
+        self._events.put(None)
+        if self._event_thread.is_alive():
+            self._event_thread.join(2.0)
 
     def _event(self, kind: str, detail: str) -> None:
         if self.on_event:
+            self._events.put((kind, detail))
+
+    def _dispatch_events(self) -> None:
+        while True:
+            item = self._events.get()
+            if item is None:
+                return
             try:
-                self.on_event(kind, detail)
+                if self.on_event:
+                    self.on_event(*item)
             except Exception:
                 pass
 
@@ -190,7 +210,8 @@ class Node:
         now = self.clock()
         moving = any(abs(t - self.position[n]) > self.axes[n].tolerance for n, t in self.target.items()
                      if math.isfinite(self.position[n]))
-        state = "fault" if self.fault else "moving" if moving else "armed" if self.backend.active else "idle"
+        state = ("fault" if self.fault else "moving" if moving else
+                 ("armed" if self.lease else "holding") if self.backend.active else "idle")
         lease, job = self.lease, self.job
         age = now - self.sample_time if math.isfinite(self.sample_time) else math.nan
         return {
@@ -303,7 +324,8 @@ class Node:
             if self.feedback_error:
                 raise Rejected(f"hardware feedback is unavailable: {self.feedback_error}", 503)
             lease = {"id": secrets.token_urlsafe(24), "owner": user, "mode": mode, "axes": list(names),
-                     "period_s": period, "timeout_s": timeout, "expires": math.inf, "armed": False}
+                     "period_s": period, "timeout_s": timeout, "expires": math.inf, "armed": False,
+                     "created": self.clock()}
             self.lease, self.last_seq, self.stream_deadline = lease, -1, None
             if self.job and self.job["status"] != "running":
                 self.job = None
@@ -407,7 +429,7 @@ class Node:
         return self.snapshot()
 
     def reset(self, user: str, local: bool) -> dict[str, Any]:
-        if not local:
+        if not local and not self.remote_reset:
             raise Rejected("a fault can only be reset on the node computer", 403)
         with self.lock:
             if not self.fault:
@@ -437,6 +459,8 @@ class Node:
         if fault and not self.fault:
             self.fault = fault
             self._event("fault", fault)
+        # Held axes stay enabled through an ordinary stop; a fault disables everything.
+        self._stop_full = self._stop_full or bool(self.fault)
         self.reason = reason
         self.stream_deadline = None
         if self.job and self.job["status"] == "running":
@@ -466,7 +490,10 @@ class Node:
     def _expire(self) -> None:
         now = self.clock()
         lease = self.lease
-        if lease and lease["armed"] and now >= lease["expires"]:
+        if lease and not lease["armed"] and now - lease["created"] > self.settings.wait_s + 5.0:
+            self._request_stop("arm_timeout", force=True, revoke=True)
+            self._event("lease", f"control of {lease['owner']} was never armed; revoked")
+        elif lease and lease["armed"] and now >= lease["expires"]:
             self._request_stop("lease_expired", force=False, revoke=True)
             self._event("lease", f"control of {lease['owner']} expired")
         elif self.stream_deadline is not None and now >= self.stream_deadline:
@@ -598,20 +625,19 @@ class Node:
     def _service_stop(self) -> None:
         # Detach the request first: a stop asked for while this one runs gets its own pass.
         with self.lock:
-            request, force = self._stop_req, self._stop_force
-            self._stop_req, self._stop_force = None, False
+            request, force, full = self._stop_req, self._stop_force, self._stop_full
+            self._stop_req, self._stop_force, self._stop_full = None, False, False
         if request is None:
             return
         try:
-            self.backend.stop(force=force)
+            self.backend.stop(force=force, keep=frozenset() if full else self.held)
             error = None
         except Exception as exc:
             error = exc
         with self.lock:
             self.target.clear()
             self.speed.clear()
-            if not self.backend.active:
-                self.armed.clear()
+            self.armed = set(getattr(self.backend, "armed", ())) if self.backend.active else set()
             if error is not None:
                 message = f"STOP_UNCONFIRMED: {error}"
                 self.fault = message if not self.fault else f"{self.fault}; {message}"
@@ -679,7 +705,9 @@ class Node:
             targets = {}
             for name, value in goal.items():
                 here, reach = self.position[name], speeds[name] * s.task_lead_s
-                targets[name] = value if abs(value - here) <= reach else here + math.copysign(reach, value - here)
+                carrot = value if abs(value - here) <= reach else here + math.copysign(reach, value - here)
+                axis = self.axes[name]
+                targets[name] = min(max(carrot, axis.minimum), axis.maximum)  # an axis may sit outside its limits
             unchanged = all(abs(targets[n] - self.target.get(n, math.inf)) <= 0.5 * self.axes[n].tolerance
                             and speeds[n] == self.speed.get(n) for n in targets)
             job["refreshed"] = now

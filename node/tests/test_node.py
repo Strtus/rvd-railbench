@@ -271,3 +271,67 @@ def test_a_fresh_snapshot_polls_at_once(make_node):
     assert state["sensors"]["encoders"]["sample_time"] >= asked
     assert state["sensors"]["encoders"]["seq"] == before + 1
     assert node.clock() - asked < 1.0
+
+
+def test_a_task_from_outside_the_limits_never_commands_beyond_them(make_node):
+    node = make_node()
+    node.backend.position["y"] = 0.7  # the axis rests outside its configured range
+    commanded = []
+    command = node.backend.command
+
+    def watch(targets, speeds):
+        commanded.extend(targets.values())
+        command(targets, speeds)
+
+    node.backend.command = watch
+    lease = task(node, [{"position": {"y": 0.0}, "speed": 0.2}], axes=["y"])
+    with Heartbeat(node, lease):
+        wait_for(lambda: node.snapshot()["job"]["status"] == "completed", timeout=8)
+    assert commanded and max(commanded) <= 0.5 and node.snapshot()["fault"] is None
+
+
+def test_held_axes_stay_enabled_through_an_ordinary_stop_but_not_a_fault(make_node):
+    from conftest import sim_profile
+
+    profile = sim_profile(z={"minimum": 0.0, "maximum": 0.6, "max_speed": 0.5, "acceleration": 50.0,
+                             "tolerance": 0.001, "start": 0.3, "hold": True})
+    node = make_node(profile=profile)
+    lease = task(node, [{"position": {"z": 0.32}, "speed": 0.2}], axes=["z"])
+    with Heartbeat(node, lease):
+        wait_for(lambda: node.snapshot()["job"]["status"] == "completed")
+    node.release("alice", {"lease_id": lease["lease_id"]})
+    state = node.snapshot()
+    assert state["state"] == "holding" and state["armed"] == ["z"] and node.backend.armed == {"z"}
+    stream(node, axes=["x"])  # others can take the rail meanwhile
+    node.stop("bob")
+    assert node.backend.armed == {"z"}
+    node.backend.fail_reads = 10**6
+    wait_for(lambda: node.snapshot()["fault"])
+    wait_for(lambda: not node.backend.active)
+    assert node.backend.armed == set()
+
+
+def test_remote_reset_when_the_node_allows_it(make_node):
+    node = make_node()
+    node.remote_reset = True
+    lease = stream(node, timeout_s=0.5)
+
+    def broken(targets, speeds):
+        raise KeyError("driver bug")
+
+    node.backend.command = broken
+    with pytest.raises(Rejected):
+        setpoint(node, lease, 1, {"x": 0.1}, 1.0)
+    assert node.reset("alice", local=False)["fault"] is None
+
+
+def test_a_stalled_event_consumer_does_not_hold_up_control(make_node):
+    node = make_node()
+    stuck = threading.Event()
+    node.on_event = lambda kind, detail: stuck.wait(30)
+    begin = time.monotonic()
+    lease = stream(node)
+    setpoint(node, lease, 1, {"x": 0.1}, 1.0)
+    node.stop("bob")
+    assert time.monotonic() - begin < 3.0
+    stuck.set()

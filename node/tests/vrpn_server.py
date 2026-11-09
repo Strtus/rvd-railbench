@@ -35,6 +35,7 @@ class FakeVrpn:
         self.silent = False
         self.connections = 0
         self.listener = socket.create_server(("127.0.0.1", 0))
+        self.listener.settimeout(0.1)
         self.port = self.listener.getsockname()[1]
         self._client: socket.socket | None = None
         self._stop = threading.Event()
@@ -59,7 +60,6 @@ class FakeVrpn:
                 pass
 
     def _serve(self) -> None:
-        self.listener.settimeout(0.1)
         while not self._stop.is_set():
             try:
                 client, _ = self.listener.accept()
