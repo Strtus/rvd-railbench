@@ -55,8 +55,12 @@ add_library(rvd_runtime
   src/runtime/config.cpp
   src/runtime/options.cpp
   src/runtime/telemetry.cpp
+  src/runtime/bridge.cpp
 )
 add_library(rvd::runtime ALIAS rvd_runtime)
+if(WIN32)
+  target_link_libraries(rvd_runtime PRIVATE ws2_32)
+endif()
 find_package(Git QUIET)
 set(RVD_GIT_COMMIT "unknown")
 set(RVD_GIT_DIRTY "unknown")
@@ -136,6 +140,9 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/runtime_test.py
     $<TARGET_FILE:rail_main> $<TARGET_FILE:rail_replay> ${CMAKE_CURRENT_SOURCE_DIR} ${RVD_ENABLE_ONNX})
   set_tests_properties(runtime_integration PROPERTIES LABELS "integration;faults;regression" TIMEOUT 120)
+  add_test(NAME bridge_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/bridge_test.py $<TARGET_FILE:rail_main> ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(bridge_integration PROPERTIES LABELS "integration;faults" TIMEOUT 120)
   rvd_test(safety_time_test faults tests/faults/safety_time_test.cpp)
   rvd_test(simulation_test "unit;faults" tests/faults/simulation_test.cpp)
   rvd_test(controller_artifact_test unit tests/unit/controller_artifact_test.cpp)

@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include "rvd/bridge.hpp"
 #include "rvd/experiment.hpp"
 #include "rvd/frames.hpp"
 #include "rvd/pfcr_adapter.hpp"
@@ -43,9 +44,14 @@ int run(const Options& opt) {
   std::unique_ptr<RailIO> io;
   if (opt.lab)
     throw std::runtime_error("physical hardware is unavailable: drivers and interlocks are not implemented");
-  auto simulation = std::make_unique<SimulatedRailIO>(fm.hill_to_rail(opt.start_hill), opt);
-  auto* sim = simulation.get();
-  io = std::move(simulation);
+  SimulatedRailIO* sim = nullptr;
+  if (opt.bridge_port > 0) {
+    io = std::make_unique<BridgeRailIO>(opt.bridge_port);
+  } else {
+    auto simulation = std::make_unique<SimulatedRailIO>(fm.hill_to_rail(opt.start_hill), opt);
+    sim = simulation.get();
+    io = std::move(simulation);
+  }
   struct HoldOnExit {
     RailIO& io;
     ~HoldOnExit() { io.hold(); }
@@ -100,7 +106,7 @@ int run(const Options& opt) {
   Measurement previous = m0;
   for (int k = 0;; ++k) {
     const double t_tick = t_start + k * cfg.period_s;
-    if (opt.fast) sim->advance_to(t_tick);
+    if (opt.fast && sim) sim->advance_to(t_tick);
     if (!opt.fast) {
       std::this_thread::sleep_until(io->at(t_tick));
       while (io->now_s() < t_tick) std::this_thread::yield();

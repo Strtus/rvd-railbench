@@ -221,6 +221,8 @@ void validate(const Options& o) {
           "step limits must be -1 or nonnegative");
   require(!o.plc || o.bounded, "PLC simulation integrates bounded motion");
   require(o.sim_trace.empty() || o.bounded, "plant trace requires bounded or PLC simulation");
+  require(o.bridge_port >= 0 && o.bridge_port <= 65535, "bridge port must be 0..65535");
+  require(o.bridge_port == 0 || !o.fast, "a bridged rail runs in real time; drop --fast");
   for (double a : o.plc_accel)
     require(std::isfinite(a) && a > 0, "PLC acceleration must be finite and positive");
   require(std::isfinite(o.plc_delay) && o.plc_delay >= 0 && o.plc_delay < o.rail.period_s,

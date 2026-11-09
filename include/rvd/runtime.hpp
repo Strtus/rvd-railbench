@@ -31,6 +31,7 @@ struct Options {
   bool sim_encoder = true;      // report axis encoder positions alongside motion capture
   Vec3 sim_bias{};
   std::string sim_trace;  // optional plant trace CSV (bounded and PLC modes)
+  int bridge_port = 0;    // rail I/O relayed by RVDLAB on this loopback port instead of the simulator
   std::string experiment_dir;
   std::vector<std::string> config_files;
   std::string log = "pfcr_rail_log.csv";

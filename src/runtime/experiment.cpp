@@ -85,7 +85,9 @@ Experiment::Experiment(const Options& o) {
                   __VERSION__
 #endif
                       )
-           << ",\n  \"hardware\": false,\n  \"state\": \"INITIALIZING\"\n}\n";
+           << ",\n  \"hardware\": " << (o.bridge_port > 0 ? "true" : "false")
+           << ",\n  \"rail\": " << quote(o.bridge_port > 0 ? "bridge" : "simulator")
+           << ",\n  \"state\": \"INITIALIZING\"\n}\n";
   metadata.close();
   inputs_ = open(directory_ / "controller.csv");
   inputs_ << "k,t_acquired,hx,hy,hz,a0,a1,a2,n0,n1,n2,n3,n4,n5,backup,intervened,status,reason\n";
