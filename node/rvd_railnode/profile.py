@@ -145,6 +145,46 @@ def _simulator(profile: dict[str, Any]) -> None:
             raise ProfileError(f"{name}.start is outside the limits")
 
 
+def _vector(value: Any, where: str) -> None:
+    if not isinstance(value, list) or len(value) != 3:
+        raise ProfileError(f"{where} must hold three numbers")
+    for i, item in enumerate(value):
+        _finite(item, f"{where}[{i}]")
+
+
+def _mocap(profile: dict[str, Any]) -> None:
+    mocap = _object(profile["mocap"], "mocap")
+    if mocap.get("driver", "vrpn") != "vrpn":
+        raise ProfileError("mocap.driver must be vrpn")
+    if not isinstance(mocap.get("host"), str) or not mocap["host"]:
+        raise ProfileError("mocap.host is required")
+    if "port" in mocap:
+        _integer(mocap["port"], "mocap.port")
+    if "local_ip" in mocap and not isinstance(mocap["local_ip"], str):
+        raise ProfileError("mocap.local_ip must be a string")
+    for key in ("max_age_s", "reconnect_after_s"):
+        if key in mocap:
+            _positive(mocap[key], f"mocap.{key}")
+    if mocap.get("max_repeat_s") is not None:
+        _positive(mocap["max_repeat_s"], "mocap.max_repeat_s")
+    trackers = _object(mocap.get("trackers"), "mocap.trackers")
+    if not trackers:
+        raise ProfileError("mocap.trackers must name at least one tracker")
+    for name, spec in trackers.items():
+        where = f"mocap.trackers.{name}"
+        _object(spec, where)
+        if "sensor" in spec:
+            _integer(spec["sensor"], f"{where}.sensor")
+        if "to_rail" in spec:
+            transform = _object(spec["to_rail"], f"{where}.to_rail")
+            matrix = transform.get("matrix")
+            if not isinstance(matrix, list) or len(matrix) != 3:
+                raise ProfileError(f"{where}.to_rail.matrix must be 3x3")
+            for i, row in enumerate(matrix):
+                _vector(row, f"{where}.to_rail.matrix[{i}]")
+            _vector(transform.get("offset"), f"{where}.to_rail.offset")
+
+
 def validate(profile: Any) -> dict[str, Any]:
     profile = copy.deepcopy(_object(profile, "profile"))
     if profile.get("driver") not in ("simulator", "modbus"):
@@ -162,6 +202,8 @@ def validate(profile: Any) -> dict[str, Any]:
         if key in profile:
             _positive(profile[key], key)
     (_modbus if profile["driver"] == "modbus" else _simulator)(profile)
+    if "mocap" in profile:
+        _mocap(profile)
     return profile
 
 

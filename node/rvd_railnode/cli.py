@@ -174,15 +174,34 @@ def remove_user(args: argparse.Namespace) -> int:
 
 
 def probe(args: argparse.Namespace) -> int:
-    backend = create_backend(load_profile(args.profile), allow_motion=False)
+    profile = load_profile(args.profile)
+    backend = create_backend(profile, allow_motion=False)
+    report: dict[str, Any] = {"backend": backend.name}
+    healthy = True
     try:
         sample = backend.read()
-        print(json.dumps({"backend": backend.name, "device": backend.status, "raw": sample.raw,
-                          "position": sample.positions, "read_s": round(sample.duration, 4),
-                          "limits": {n: a.describe() for n, a in backend.axes.items()}}, indent=2))
+        report.update(device=backend.status, raw=sample.raw, position=sample.positions,
+                      read_s=round(sample.duration, 4), limits={n: a.describe() for n, a in backend.axes.items()})
+    except BackendError as exc:
+        report.update(device=backend.status, error=str(exc))
+        healthy = False
     finally:
         backend.close()
-    return 0
+    if "mocap" in profile:
+        from .mocap import MocapReceiver
+
+        receiver = MocapReceiver(profile["mocap"]).start()
+        try:
+            time.sleep(args.mocap_seconds)
+            report["mocap"] = state = receiver.state()
+        finally:
+            receiver.close()
+        for tracker in state["trackers"].values():
+            if "frames" in tracker:
+                tracker["rate_hz"] = round(tracker["frames"] / args.mocap_seconds, 1)
+        healthy = healthy and all(t["valid"] for t in state["trackers"].values())
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0 if healthy else 2
 
 
 def _client(args: argparse.Namespace) -> NodeClient:
@@ -225,6 +244,16 @@ def status(args: argparse.Namespace) -> int:
         mark = "" if axis["motion"] else "  (read only)"
         print(f"{name:<8}{_value(state['position'].get(name)):>14}{_value(state['target'].get(name)):>14} "
               f"{axis['unit']}{mark}")
+    mocap = state["sensors"].get("mocap")
+    if mocap:
+        print(f"mocap     {mocap['source']} · " + ("connected" if mocap["connected"] else f"error: {mocap['error']}")
+              + f" · {mocap['frames']} frames")
+        for name, tracker in mocap["trackers"].items():
+            where = tracker.get("rail") or dict(zip("xyz", tracker.get("position_raw") or []))
+            frame = "rail" if "rail" in tracker else "raw"
+            pose = "  ".join(f"{k} {v:.4f}" for k, v in where.items())
+            print(f"  {name:<10}" + ("ok    " if tracker["valid"] else "STALE ") + f"{frame} {pose}"
+                  + (f"  ({tracker['reason']})" if tracker.get("reason") else ""))
     return 0
 
 
@@ -315,8 +344,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--users", nargs="*", default=[], metavar="NAME")
     p.set_defaults(run=initialize)
-    p = sub.add_parser("probe", help="read the hardware once; never writes")
+    p = sub.add_parser("probe", help="read the hardware (and motion capture) once; never writes")
     p.add_argument("--profile", type=Path, required=True)
+    p.add_argument("--mocap-seconds", type=float, default=2.0, help="how long to listen to motion capture")
     p.set_defaults(run=probe)
     p = sub.add_parser("serve", help="run the node")
     p.add_argument("--config", type=Path, required=True)
