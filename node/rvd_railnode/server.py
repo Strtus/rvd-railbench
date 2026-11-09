@@ -143,6 +143,7 @@ class Handler(BaseHTTPRequestHandler):
                     "/v1/lease": node.acquire, "/v1/heartbeat": node.heartbeat, "/v1/release": node.release,
                     "/v1/setpoint": node.setpoint, "/v1/task": node.submit_task,
                     "/v1/stop": lambda u, _: node.stop(u), "/v1/reset": lambda u, _: node.reset(u, self._local()),
+                    "/v1/park": lambda u, _: node.park(u),
                 }
                 if path not in routes:
                     raise Rejected("unknown endpoint", 404)
@@ -282,8 +283,10 @@ def serve(config: NodeConfig, allow_motion: bool = False, out: Callable[[str], N
     out(f"users     {' '.join(server.users.names())}{remote}")
     held = [n for n, a in backend.axes.items() if a.hold]
     if held:
-        out(f"holding   {' '.join(held)} stay enabled after an ordinary stop")
-    out("Ctrl+C stops the node and every axis it moved")
+        parked = [n for n in held if backend.axes[n].park is not None]
+        out(f"holding   {' '.join(held)} stay enabled through stops and faults"
+            + (f"; {' '.join(parked)} park before they are released" if parked else ""))
+    out("Ctrl+C " + ("parks the held axes, then stops the node" if held else "stops the node and every axis it moved"))
     server.audit(event="start", detail=f"{backend.name} motion={motion}")
 
     def interrupt(signum: int, frame: Any) -> None:

@@ -62,6 +62,39 @@ def move(node: Any, goal: dict[str, float], speed: dict[str, float] | float, can
         node.release()
 
 
+def held_axes(capabilities: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Axes the node keeps enabled when released, such as an attitude platform that would fall unpowered."""
+    return {n: a for n, a in capabilities["axes"].items() if a.get("hold") and a.get("motion")}
+
+
+def level(node: Any, cancel: threading.Event, progress: Callable[[dict[str, Any]], None] = lambda _: None) -> str:
+    """Drives the held axes to zero at their park speed; the node keeps holding them there."""
+    axes = held_axes(node.capabilities())
+    if not axes:
+        return "no held axes on this node"
+    speed = {n: a.get("park_speed") or 0.2 * a["max_speed"] for n, a in axes.items()}
+    return move(node, dict.fromkeys(axes, 0.0), speed, cancel, progress)
+
+
+def park(node: Any, cancel: threading.Event, progress: Callable[[dict[str, Any]], None] = lambda _: None) -> str:
+    """Drives the held axes to their park positions; the node releases them there."""
+    reply = node.park()
+    if not reply.get("axes"):
+        return "nothing to park"
+    while True:
+        state = node.state()
+        progress(state)
+        job = state.get("job") or {}
+        if job.get("id") != reply["task_id"] or job.get("status") != "running":
+            break
+        if cancel.wait(0.2):
+            node.stop()
+            return "stopped; the held axes keep holding"
+    if job.get("id") == reply["task_id"] and job.get("status") == "completed":
+        return "parked and released"
+    return f"{job.get('status', 'lost')}: {job.get('reason') or state.get('fault') or state.get('reason')}"
+
+
 class Bridge:
     """Holds a stream lease on x, y, z and answers rail_main's READ / SEND / HOLD lines (see bridge.hpp)."""
 

@@ -162,6 +162,55 @@ async def test_motion_control_shows_the_node_and_moves_the_rail(node, tmp_path, 
         assert state["position"]["x"] == pytest.approx(START[0] + 0.01, abs=0.001) and state["control"] is None
 
 
+@pytest.fixture
+def platform_node(tmp_path: Path):
+    profile = copy.deepcopy(SIMULATOR)
+    profile["axes"]["pitch"] = {"minimum": -0.4, "maximum": 0.2, "max_speed": 0.1, "acceleration": 1.0,
+                                "tolerance": 0.002, "resolution": 0.001, "start": 0.18, "hold": True,
+                                "park": 0.18, "park_speed": 0.05}
+    rail = Node(SimBackend(validate(profile), True), Settings(poll_s=0.05))
+    (tmp_path / "users.json").write_text(json.dumps({"alice": "a" * 40}))
+    server = NodeServer(("127.0.0.1", 0), rail, UserStore(tmp_path / "users.json"))
+    rail.start()
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    connection = tmp_path / "connection.json"
+    connection.write_text(json.dumps({"url": f"http://127.0.0.1:{server.server_address[1]}", "token": "a" * 40}))
+    yield connection, rail
+    server.shutdown()
+    rail.backend.stuck.add("pitch")  # no park at shutdown, the test only checks the screen
+    rail.close()
+    server.server_close()
+
+
+async def test_motion_control_levels_parks_and_resets(platform_node, tmp_path, profiles):
+    connection, rail = platform_node
+    app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)
+    async with app.run_test(size=(140, 70)) as pilot:
+        await pilot.press("2", "enter")
+        screen = app.screen
+        message = screen.query_one("#node-message", Static)
+        await settle(pilot, lambda: "pitch" in shown(screen.query_one("#node-view", Static)))
+        screen.query_one("#node-level", Button).press()
+        await confirm(pilot, app)
+        await settle(pilot, lambda: "level completed" in shown(message))
+        assert rail.snapshot()["position"]["pitch"] == pytest.approx(0.0, abs=0.002)
+        assert rail.snapshot()["state"] == "holding"
+        rail.backend.fail_reads = 10**6
+        await settle(pilot, lambda: rail.snapshot()["fault"])
+        rail.backend.fail_reads = 0
+        await settle(pilot, lambda: "FEEDBACK_LOST" in shown(screen.query_one("#node-view", Static)))
+        screen.query_one("#node-reset", Button).press()
+        await confirm(pilot, app)
+        await settle(pilot, lambda: "reset" in shown(message) and rail.snapshot()["fault"] is None)
+        assert rail.backend.armed == {"pitch"}
+        screen.query_one("#node-park", Button).press()
+        await confirm(pilot, app)
+        await settle(pilot, lambda: "park parked and released" in shown(message))
+        state = rail.snapshot()
+        assert state["position"]["pitch"] == pytest.approx(0.18, abs=0.002) and state["state"] == "idle"
+
+
 async def test_rendezvous_offers_the_node_and_stops_the_rail(node, tmp_path, profiles):
     connection, rail = node
     app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)

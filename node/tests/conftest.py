@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 FAST = dict(poll_s=0.01, lease_ttl_s=0.5, max_timeout_s=1.0, max_period_s=0.5, min_period_s=0.01,
             stall_timeout_s=0.3, max_sample_age_s=0.25, task_lead_s=0.2, task_refresh_s=0.05, horizon_s=0.4,
-            wait_s=5.0)
+            wait_s=5.0, drive_dropout_s=0.1)
 
 
 def sim_profile(**axes: dict[str, Any]) -> dict[str, Any]:

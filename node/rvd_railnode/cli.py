@@ -269,6 +269,44 @@ def reset(args: argparse.Namespace) -> int:
     return 0
 
 
+def park(args: argparse.Namespace) -> int:
+    client = _client(args)
+    reply = client.park()
+    names = reply.get("axes") or []
+    if not names:
+        print("nothing to park: no held axis is enabled")
+        return 0
+    print(f"parking {' '.join(names)}", flush=True)
+    shown = -math.inf
+    try:
+        while True:
+            state = client.state()
+            job = state["job"] or {}
+            running = job.get("id") == reply["task_id"] and job.get("status") == "running"
+            if time.monotonic() - shown >= 1.0 or not running:
+                shown = time.monotonic()
+                print("  ".join(f"{n} {_value(state['position'].get(n))}" for n in names), flush=True)
+            if not running:
+                break
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        client.stop()
+        print("stopped; the axes keep holding where they are", file=sys.stderr)
+        raise
+    if job.get("id") != reply["task_id"] or job.get("status") != "completed":
+        cause = job.get("reason") or state.get("fault") or state.get("reason")
+        raise CliError(f"park {job.get('status', 'lost')}: {cause}; the axes keep holding where they are")
+    end = time.monotonic() + 30.0
+    while set(state.get("armed", ())) & set(names) and time.monotonic() < end:
+        time.sleep(0.2)
+        state = client.state()
+    if set(state.get("armed", ())) & set(names):
+        raise CliError(f"parked, but {' '.join(sorted(set(state['armed']) & set(names)))} still enabled: "
+                       f"{state.get('fault') or state.get('reason')}")
+    print("parked and released")
+    return 0
+
+
 def _assignments(items: list[str], option: str) -> dict[str, float]:
     result: dict[str, float] = {}
     for item in items:
@@ -353,7 +391,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-motion", action="store_true", help="accept motion commands (default: read-only)")
     p.set_defaults(run=serve)
     for name, text, run in (("status", "show the node state", status), ("stop", "stop every axis", stop),
-                            ("reset", "clear a fault once its cause is fixed (node computer only)", reset)):
+                            ("reset", "clear a fault once its cause is fixed", reset),
+                            ("park", "drive the held axes to their park positions, then release them", park)):
         p = sub.add_parser(name, help=text)
         p.add_argument("--config", type=Path, help="node.json of the node on this computer")
         p.add_argument("--connection", type=Path, help="connection.json of a user")

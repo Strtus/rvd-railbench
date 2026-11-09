@@ -290,25 +290,167 @@ def test_a_task_from_outside_the_limits_never_commands_beyond_them(make_node):
     assert commanded and max(commanded) <= 0.5 and node.snapshot()["fault"] is None
 
 
-def test_held_axes_stay_enabled_through_an_ordinary_stop_but_not_a_fault(make_node):
+def held_profile(**z):
     from conftest import sim_profile
 
-    profile = sim_profile(z={"minimum": 0.0, "maximum": 0.6, "max_speed": 0.5, "acceleration": 50.0,
-                             "tolerance": 0.001, "start": 0.3, "hold": True})
-    node = make_node(profile=profile)
-    lease = task(node, [{"position": {"z": 0.32}, "speed": 0.2}], axes=["z"])
+    return sim_profile(z={"minimum": 0.0, "maximum": 0.6, "max_speed": 0.5, "acceleration": 50.0,
+                          "tolerance": 0.001, "start": 0.3, "hold": True, **z})
+
+
+def hold_z(node, at=0.32):
+    lease = task(node, [{"position": {"z": at}, "speed": 0.2}], axes=["z"])
     with Heartbeat(node, lease):
         wait_for(lambda: node.snapshot()["job"]["status"] == "completed")
     node.release("alice", {"lease_id": lease["lease_id"]})
-    state = node.snapshot()
-    assert state["state"] == "holding" and state["armed"] == ["z"] and node.backend.armed == {"z"}
+    assert node.snapshot()["state"] == "holding" and node.backend.armed == {"z"}
+
+
+def test_held_axes_stay_enabled_through_stops_faults_and_resets(make_node):
+    node = make_node(profile=held_profile())
+    hold_z(node)
+    assert node.snapshot()["armed"] == ["z"]
     stream(node, axes=["x"])  # others can take the rail meanwhile
     node.stop("bob")
     assert node.backend.armed == {"z"}
+    lease = task(node, [{"position": {"x": 5.0}, "speed": 1.0}], axes=["x"])
+    node.backend.stuck.add("x")
+    with Heartbeat(node, lease):
+        wait_for(lambda: node.snapshot()["fault"])
+    assert node.snapshot()["fault"].startswith("MOTION_STALLED: x")
+    wait_for(lambda: node.backend.armed == {"z"})
+    node.backend.stuck.clear()
+    node.backend.fail_reads = 3
+    time.sleep(0.2)
+    assert node.reset("alice", local=True)["fault"] is None
+    assert node.backend.armed == {"z"} and node.snapshot()["state"] == "holding"
+    assert node.backend.position["z"] == pytest.approx(0.32, abs=0.002)
+
+
+def test_lost_feedback_while_holding_faults_but_keeps_holding(make_node):
+    node = make_node(profile=held_profile())
+    hold_z(node)
     node.backend.fail_reads = 10**6
     wait_for(lambda: node.snapshot()["fault"])
-    wait_for(lambda: not node.backend.active)
-    assert node.backend.armed == set()
+    assert node.snapshot()["fault"].startswith("FEEDBACK_LOST")
+    time.sleep(0.3)
+    assert node.backend.armed == {"z"}
+
+
+def test_a_drive_that_drops_out_faults_and_held_axes_keep_holding(make_node):
+    node = make_node(profile=held_profile())
+    hold_z(node)
+    lease = stream(node, axes=["x"], timeout_s=0.5)
+    setpoint(node, lease, 1, {"x": 0.1}, 1.0)
+    node.backend.dropped.add("x")
+    wait_for(lambda: node.snapshot()["fault"])
+    assert node.snapshot()["fault"] == "DRIVE_DISABLED: x no longer reports enabled"
+    wait_for(lambda: node.backend.armed == {"z"})
+    node.backend.dropped.clear()
+    assert node.reset("alice", local=True)["fault"] is None
+    stream(node, axes=["x"])
+
+
+def test_a_brief_gap_in_a_drive_enabled_report_is_tolerated(make_node):
+    node = make_node(profile=held_profile())
+    hold_z(node)
+    lease = stream(node, axes=["x"], timeout_s=0.5)
+    setpoint(node, lease, 1, {"x": 0.1}, 1.0)
+    node.backend.dropped.update({"x", "z"})
+    time.sleep(0.03)
+    node.backend.dropped.clear()
+    time.sleep(0.2)
+    assert node.snapshot()["fault"] is None
+    assert node.backend.armed == {"x", "z"}
+
+
+def test_a_held_drive_that_drops_out_is_let_go_by_the_reset(make_node):
+    node = make_node(profile=held_profile())
+    hold_z(node)
+    node.backend.dropped.add("z")
+    wait_for(lambda: node.snapshot()["fault"])
+    assert node.backend.armed == {"z"}  # no disable request while the fault is open
+    assert node.reset("alice", local=True)["fault"] is None
+    assert node.backend.armed == set() and node.snapshot()["state"] == "idle"
+
+
+def test_park_drives_held_axes_to_rest_and_releases_them(make_node):
+    node = make_node(profile=held_profile(park=0.05, park_speed=0.2))
+    assert node.park("bob") == {"status": "idle", "axes": []}  # nothing held yet
+    hold_z(node)
+    reply = node.park("bob")
+    assert reply["axes"] == ["z"]
+    assert node.snapshot()["state"] in ("parking", "moving")
+    with pytest.raises(Rejected, match="held by bob"):
+        stream(node, axes=["x"])
+    wait_for(lambda: node.snapshot()["state"] == "idle")
+    assert node.backend.position["z"] == pytest.approx(0.05, abs=0.002)
+    assert node.backend.armed == set() and node.snapshot()["fault"] is None
+    assert node.snapshot()["job"]["status"] == "completed"
+
+
+def test_a_stop_during_park_keeps_the_axes_holding(make_node):
+    node = make_node(profile=held_profile(park=0.05, park_speed=0.05))
+    hold_z(node, at=0.5)
+    node.park("bob")
+    wait_for(lambda: node.backend.position["z"] < 0.48)
+    node.stop("carol")
+    state = node.snapshot()
+    assert state["state"] == "holding" and node.backend.armed == {"z"} and state["control"] is None
+    assert node.backend.position["z"] > 0.1
+
+
+def test_shutdown_parks_held_axes_before_releasing_them(make_node):
+    node = make_node(profile=held_profile(park=0.05, park_speed=0.3))
+    hold_z(node)
+    events = []
+    node.on_event = lambda kind, detail: events.append((kind, detail))
+    node.close()
+    assert node.backend.position["z"] == pytest.approx(0.05, abs=0.002)
+    assert node.backend.armed == set() and not node.backend.active
+    assert ("park", "z parked") in events
+
+
+def test_shutdown_keeps_holding_when_parking_fails(make_node):
+    node = make_node(profile=held_profile(park=0.05, park_speed=0.3))
+    hold_z(node)
+    node.backend.stuck.add("z")
+    node.close()
+    assert node.backend.armed == {"z"}
+    assert node.backend.position["z"] == pytest.approx(0.32, abs=0.002)
+
+
+def test_held_axes_left_enabled_are_taken_over_at_start():
+    from conftest import FAST
+
+    from rvd_railnode.node import Node, Settings
+    from rvd_railnode.sim import SimBackend
+
+    backend = SimBackend(held_profile(), True)
+    backend.left_enabled.add("z")
+    node = Node(backend, Settings(**FAST))
+    node.start()
+    try:
+        wait_for(lambda: node.snapshot()["state"] == "holding")
+        assert node.snapshot()["armed"] == ["z"] and backend.armed == {"z"}
+    finally:
+        backend.stuck.add("z")  # keep the test quick: no park, the axis keeps holding
+        node.close()
+
+
+def test_a_slow_arm_followed_by_a_lost_sample_does_not_fault(make_node):
+    node = make_node()
+    arm = node.backend.arm
+
+    def slow(names):
+        arm(names)
+        time.sleep(0.4)  # longer than max_sample_age_s
+        node.backend.fail_reads = 1
+
+    node.backend.arm = slow
+    lease = stream(node, axes=["z"], timeout_s=0.5)
+    time.sleep(0.15)
+    assert node.snapshot()["fault"] is None
+    setpoint(node, lease, 1, {"z": 0.31}, 0.2)
 
 
 def test_remote_reset_when_the_node_allows_it(make_node):

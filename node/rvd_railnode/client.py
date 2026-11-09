@@ -153,6 +153,9 @@ class NodeClient:
     def reset(self) -> dict[str, Any]:
         return self.request("POST", "/v1/reset", {}, timeout=30)
 
+    def park(self) -> dict[str, Any]:
+        return self.request("POST", "/v1/park", {}, timeout=30)
+
     def release(self) -> None:
         lease = self.lease
         if lease is None:

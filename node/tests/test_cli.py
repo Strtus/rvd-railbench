@@ -109,6 +109,22 @@ def test_move_goes_there_and_releases_control(initialized, capsys):
         assert "speed 9 is outside" in capsys.readouterr().err
 
 
+def test_park_drives_the_held_axes_to_rest(initialized, capsys):
+    root = initialized[0]
+    profile = sim_profile(z={"minimum": -0.5, "maximum": 0.5, "max_speed": 0.5, "acceleration": 50.0,
+                             "tolerance": 0.001, "hold": True, "park": -0.2, "park_speed": 0.4})
+    (root / "profile.json").write_text(json.dumps(profile))
+    with running(root, allow_motion=True) as (config_path, node):
+        assert main(["park", "--config", str(config_path)]) == 0
+        assert "nothing to park" in capsys.readouterr().out
+        assert main(["move", "--config", str(config_path), "--to", "z=0.05", "--speed", "0.2"]) == 0
+        assert node.snapshot()["state"] == "holding"
+        assert main(["park", "--config", str(config_path)]) == 0
+        assert "parked and released" in capsys.readouterr().out
+        state = node.snapshot()
+        assert state["position"]["z"] == pytest.approx(-0.2, abs=0.002) and state["state"] == "idle"
+
+
 def test_probe_reads_once_and_prints_positions(tmp_path, capsys):
     path = tmp_path / "sim.json"
     path.write_text(json.dumps(sim_profile()))

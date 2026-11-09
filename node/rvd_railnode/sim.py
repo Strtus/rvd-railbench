@@ -37,6 +37,8 @@ class SimBackend:
         self.fail_reads = 0
         self.fail_stop = False
         self.stuck: set[str] = set()
+        self.dropped: set[str] = set()  # armed axes whose drive reports it is no longer enabled
+        self.left_enabled: set[str] = set()  # axes found enabled at start, as if held through a restart
         self._t = clock()
 
     def _advance(self) -> None:
@@ -68,7 +70,7 @@ class SimBackend:
             self.fail_reads -= 1
             raise BackendError("simulated feedback failure")
         self._advance()
-        return Sample(dict(self.position), begin, self._clock() - begin)
+        return Sample(dict(self.position), begin, self._clock() - begin, dropped=frozenset(self.dropped & self.armed))
 
     def _require_motion(self) -> None:
         if not self.allow_motion:
@@ -81,6 +83,14 @@ class SimBackend:
             time.sleep(self.enable_delay_s)
         self.active = True
         self.armed.update(names)
+
+    def adopt(self, names: Iterable[str]) -> list[str]:
+        if not self.allow_motion:
+            return []
+        found = sorted(set(names) & self.left_enabled - self.armed)
+        self.armed.update(found)
+        self.active = self.active or bool(found)
+        return found
 
     def command(self, targets: dict[str, float], speeds: dict[str, float]) -> None:
         self._require_motion()
@@ -108,4 +118,4 @@ class SimBackend:
         self.active = bool(holding)
 
     def close(self) -> None:
-        self.stop()
+        pass

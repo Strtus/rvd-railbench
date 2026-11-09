@@ -312,6 +312,84 @@ def test_a_held_servo_stays_enabled_where_it_stopped():
     assert plc.d[23] == 0 and not plc_backend.active
 
 
+def test_arming_latches_zero_speed_before_the_enable():
+    plc = FakePlc()
+    plc.d[21] = 4000
+    backend(plc).arm(["z"])
+    speed = plc.writes.index(("d", 21, 0))
+    enable = plc.writes.index(("m", 50, True))
+    assert speed < enable and plc.d[21] == 0
+
+
+def test_an_enabled_drive_is_taken_over_without_an_enable_edge():
+    plc = FakePlc()
+    plc.d[23], plc.d[24] = 1, 0
+    plc.d[20] = 70000  # a stale target from an earlier run
+    plc_backend = backend(plc)
+    plc_backend.arm(["z"])
+    assert plc.d[20] == 51000 and not [w for w in plc.writes if w[0] == "m"]
+    assert plc_backend.armed == {"z"}
+
+
+def test_an_enable_that_drops_out_again_is_not_confirmed():
+    plc = FakePlc()
+    reads = iter([0, 1] + [0] * 1000)  # not enabled at first, then a brief report that does not last
+    read_d = plc.read_d
+    plc.read_d = lambda d: next(reads) if d == 23 else read_d(d)
+    clock = iter(range(1000))
+    plc_backend = PlcBackend(PROFILE, True, io=plc, sleep=lambda _: None, clock=lambda: float(next(clock)))
+    with pytest.raises(ModbusError, match="reported enabled, then dropped out"):
+        plc_backend.arm(["z"])
+
+
+def test_a_drive_that_drops_out_is_reported_with_the_positions():
+    plc = FakePlc()
+    plc_backend = backend(plc)
+    plc_backend.arm(["x", "z"])
+    plc.d[23] = 0
+    sample = plc_backend.read()
+    assert sample.dropped == {"z"} and sample.positions["z"] == pytest.approx(0.01)
+
+
+def test_adopt_holds_an_enabled_drive_where_it_is():
+    plc = FakePlc()
+    plc.d[23], plc.d[20] = 1, 70000
+    plc_backend = backend(plc)
+    assert plc_backend.adopt(["z"]) == ["z"]
+    assert plc_backend.armed == {"z"} and plc_backend.active and plc.d[20] == 51000
+    assert not [w for w in plc.writes if w[0] == "m"]
+    assert backend(FakePlc()).adopt(["z"]) == []
+    assert backend(plc, motion=False).adopt(["z"]) == []
+
+
+def test_closing_disables_nothing():
+    plc = FakePlc()
+    plc_backend = backend(plc)
+    plc_backend.arm(["z"])
+    plc.writes.clear()
+    plc_backend.close()
+    assert plc.writes == [] and plc.d[23] == 1
+
+
+def test_park_positions_lie_within_the_limits_and_need_hold():
+    profile = copy.deepcopy(PROFILE)
+    from rvd_railnode.profile import axes
+
+    profile["axes"]["z"].update(hold=True, park=0.4, park_speed=0.01)
+    assert axes(validate(profile))["z"].park == pytest.approx(0.4)  # exactly on the upper limit
+    profile["axes"]["z"]["park"] = 0.400004  # within half a count of it
+    assert axes(validate(profile))["z"].park == pytest.approx(0.4)
+    profile["axes"]["z"]["park"] = 0.41
+    with pytest.raises(ProfileError, match="outside"):
+        validate(profile)
+    profile["axes"]["z"].update(park=0.1, park_speed=1.0)
+    with pytest.raises(ProfileError, match="park_speed"):
+        validate(profile)
+    profile["axes"]["z"].update(park_speed=0.01, hold=False)
+    with pytest.raises(ProfileError, match="needs hold"):
+        validate(profile)
+
+
 def test_only_servo_axes_may_hold():
     profile = copy.deepcopy(PROFILE)
     profile["axes"]["x"]["hold"] = True

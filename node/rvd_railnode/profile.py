@@ -12,6 +12,7 @@ from typing import Any
 AXES = ("x", "y", "z", "pitch", "yaw", "roll")
 LINEAR = ("x", "y", "z")
 TIMINGS = ("poll_s", "stall_timeout_s", "enable_timeout_s", "stop_timeout_s")
+PARK_SPEED_SHARE = 0.2  # a held axis parks at this share of its speed limit unless park_speed says otherwise
 
 SIMULATOR: dict[str, Any] = {
     "driver": "simulator",
@@ -38,6 +39,8 @@ class Axis:
     resolution: float
     motion: bool
     hold: bool = False
+    park: float | None = None  # where a held axis rests unpowered; it is driven there before it is released
+    park_speed: float | None = None
 
     @property
     def unit(self) -> str:
@@ -58,6 +61,8 @@ class Axis:
             "resolution": self.resolution,
             "motion": self.motion,
             "hold": self.hold,
+            "park": self.park,
+            "park_speed": self.park_speed,
         }
 
 
@@ -193,22 +198,31 @@ def validate(profile: Any) -> dict[str, Any]:
     profile = copy.deepcopy(_object(profile, "profile"))
     if profile.get("driver") not in ("simulator", "modbus"):
         raise ProfileError("driver must be simulator or modbus")
-    axes = _object(profile.get("axes"), "axes")
-    if not axes or set(axes) - set(AXES):
+    specs = _object(profile.get("axes"), "axes")
+    if not specs or set(specs) - set(AXES):
         raise ProfileError(f"axes must be a non-empty subset of {', '.join(AXES)}")
-    for name, axis in axes.items():
+    for name, axis in specs.items():
         _object(axis, name)
         _positive(axis.get("max_speed"), f"{name}.max_speed")
         _positive(axis.get("tolerance"), f"{name}.tolerance")
         for key in ("motion", "hold"):
             if not isinstance(axis.get(key, key == "motion"), bool):
                 raise ProfileError(f"{name}.{key} must be true or false")
+        if "park" in axis:
+            _finite(axis["park"], f"{name}.park")
+            if not axis.get("hold"):
+                raise ProfileError(f"{name}.park needs hold: only held axes are parked")
+        if "park_speed" in axis:
+            _positive(axis["park_speed"], f"{name}.park_speed")
+            if "park" not in axis:
+                raise ProfileError(f"{name}.park_speed needs park")
     for key in TIMINGS:
         if key in profile:
             _positive(profile[key], key)
     (_modbus if profile["driver"] == "modbus" else _simulator)(profile)
     if "mocap" in profile:
         _mocap(profile)
+    axes(profile)
     return profile
 
 
@@ -232,6 +246,15 @@ def axes(profile: dict[str, Any]) -> dict[str, Axis]:
             lo, hi, resolution = ends[0], ends[1], abs(scale)
         else:
             lo, hi, resolution = float(spec["minimum"]), float(spec["maximum"]), float(spec.get("resolution", 1e-6))
+        park = park_speed = None
+        if "park" in spec:
+            park = float(spec["park"])
+            if not lo - 0.5 * resolution <= park <= hi + 0.5 * resolution:
+                raise ProfileError(f"{name}.park {park:g} is outside [{lo:g}, {hi:g}]")
+            park = min(max(park, lo), hi)
+            park_speed = float(spec.get("park_speed", PARK_SPEED_SHARE * float(spec["max_speed"])))
+            if not resolution <= park_speed <= float(spec["max_speed"]):
+                raise ProfileError(f"{name}.park_speed must lie within [{resolution:g}, {spec['max_speed']:g}]")
         result[name] = Axis(name, lo, hi, float(spec["max_speed"]), float(spec["tolerance"]), resolution,
-                            spec.get("motion", True), spec.get("hold", False))
+                            spec.get("motion", True), spec.get("hold", False), park, park_speed)
     return result
