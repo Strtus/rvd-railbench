@@ -11,6 +11,7 @@ on:
       - "CMakeLists.txt"
       - "tui/runtime.json.in"
       - "tui/rvdlab/**"
+      - "node/rvd_railnode/**"
   workflow_dispatch:
 permissions:
   contents: write

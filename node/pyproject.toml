@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rvd-railnode"
+dynamic = ["version"]
+description = "Hardware node for RVD-RailBench"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = []
+
+[project.optional-dependencies]
+init = ["cryptography>=42"]
+test = ["pytest>=8", "cryptography>=42"]
+
+[project.scripts]
+rail-node = "rvd_railnode.cli:main"
+
+[tool.setuptools]
+packages = ["rvd_railnode"]
+
+[tool.setuptools.dynamic]
+version = { attr = "rvd_railnode.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
