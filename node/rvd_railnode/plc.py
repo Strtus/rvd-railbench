@@ -13,10 +13,25 @@ from .backend import BackendError, InterlockError, Sample
 from .profile import axes as profile_axes
 
 ENABLE_CONFIRM_READS = 3
+MAX_READ_WORDS = 125  # Modbus limit for one read
+DIAGNOSTIC_READ_WORDS = 100
+DIAGNOSTIC_BLOCK_ATTEMPTS = 2
+DIAGNOSTIC_SINGLE_READS = 8  # per poll, for a PLC that only answers one register at a time
 
 
 class ModbusError(BackendError):
     pass
+
+
+def _runs(registers: Iterable[int], stride: int, max_words: int) -> list[tuple[int, int]]:
+    """Groups D registers into (first, count) runs that each fit one read."""
+    runs: list[tuple[int, int]] = []
+    for d in sorted(set(registers)):
+        if runs and stride * (d - runs[-1][0]) + 2 <= max_words:
+            runs[-1] = (runs[-1][0], d - runs[-1][0] + 1)
+        else:
+            runs.append((d, 1))
+    return runs
 
 
 class Modbus:
@@ -107,14 +122,28 @@ class Modbus:
             raise ModbusError("invalid register reply")
         return struct.unpack(">H", reply[2:])[0]
 
+    def _d_value(self, first: int, second: int) -> int:
+        lo, hi = (first, second) if self.low_first else (second, first)
+        value = lo | hi << 16
+        return value - (1 << 32) if value & 0x80000000 else value
+
     def read_d(self, d: int) -> int:
         reply = self.transact(struct.pack(">BHH", 3, self._d_address(d), 2))
         if len(reply) != 6 or reply[1] != 4:
             raise ModbusError("invalid D register reply")
-        first, second = struct.unpack(">HH", reply[2:])
-        lo, hi = (first, second) if self.low_first else (second, first)
-        value = lo | hi << 16
-        return value - (1 << 32) if value & 0x80000000 else value
+        return self._d_value(*struct.unpack(">HH", reply[2:]))
+
+    def read_ds(self, d: int, count: int) -> list[int]:
+        """count consecutive D registers in one exchange."""
+        words = self.d_stride * (count - 1) + 2
+        if count < 1 or self.d_stride < 1 or words > MAX_READ_WORDS:
+            raise ModbusError(f"cannot read {count} D registers in one exchange")
+        self._d_address(d + count - 1)
+        reply = self.transact(struct.pack(">BHH", 3, self._d_address(d), words))
+        if len(reply) != 2 + 2 * words or reply[1] != 2 * words:
+            raise ModbusError("invalid D block reply")
+        raw = struct.unpack(f">{words}H", reply[2:])
+        return [self._d_value(raw[self.d_stride * i], raw[self.d_stride * i + 1]) for i in range(count)]
 
     def write_d(self, d: int, value: int) -> None:
         if not -(1 << 31) <= value < 1 << 31:
@@ -160,6 +189,12 @@ class PlcBackend:
                                word_order=bus.get("word_order", "low_first"), allow_writes=allow_motion,
                                clock=clock, sleep=sleep)
         self._interlock = profile.get("interlock", {})
+        self._diagnostics: dict[str, int] = dict(profile.get("diagnostics", {}))
+        self._diag_order = sorted(set(self._diagnostics.values()))
+        self._diag_runs = _runs(self._diag_order, bus.get("d_stride", 2), DIAGNOSTIC_READ_WORDS)
+        self._diag_block_failures = 0
+        self._diag_values: dict[int, int] = {}
+        self._diag_next = 0
         self._clock, self._sleep = clock, sleep
         self._verified = -1
         self.armed: set[str] = set()
@@ -224,8 +259,33 @@ class PlcBackend:
         dropped = frozenset(n for n in sorted(self.armed)
                             if self._spec[n]["type"] == "servo" and self.io.read_d(self._spec[n]["enabled_d"]) != 1)
         self.raw = raw
+        self._read_diagnostics()
         return Sample({n: self._position(n, c) for n, c in raw.items()}, begin, self._clock() - begin, dict(raw),
                       dropped)
+
+    def _read_diagnostics(self) -> None:
+        """Refreshes the PLC status registers the profile names. A failure here never fails the position sample."""
+        if not self._diagnostics:
+            return
+        error = None
+        try:
+            if self._diag_block_failures < DIAGNOSTIC_BLOCK_ATTEMPTS:
+                try:
+                    for first, count in self._diag_runs:
+                        self._diag_values.update(zip(range(first, first + count), self.io.read_ds(first, count)))
+                    self._diag_block_failures = 0
+                except ModbusError as exc:
+                    self._diag_block_failures += 1
+                    error = f"block read failed: {exc}"
+            else:
+                for _ in range(min(DIAGNOSTIC_SINGLE_READS, len(self._diag_order))):
+                    d = self._diag_order[self._diag_next]
+                    self._diag_next = (self._diag_next + 1) % len(self._diag_order)
+                    self._diag_values[d] = self.io.read_d(d)
+        except ModbusError as exc:
+            error = str(exc)
+        self.status["diagnostics"] = {label: self._diag_values.get(d) for label, d in self._diagnostics.items()}
+        self.status["diagnostics_error"] = error
 
     def arm(self, names: Iterable[str]) -> None:
         self._require_motion()

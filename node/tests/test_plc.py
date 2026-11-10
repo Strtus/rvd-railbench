@@ -6,8 +6,8 @@ import struct
 import pytest
 
 from rvd_railnode.backend import InterlockError
-from rvd_railnode.plc import Modbus, ModbusError, PlcBackend
-from rvd_railnode.profile import ProfileError, validate
+from rvd_railnode.plc import DIAGNOSTIC_BLOCK_ATTEMPTS, DIAGNOSTIC_SINGLE_READS, Modbus, ModbusError, PlcBackend, _runs
+from rvd_railnode.profile import SIMULATOR, ProfileError, validate
 
 # Synthetic register map; it does not describe any real installation.
 PROFILE = validate({
@@ -37,6 +37,8 @@ class FakePlc:
         self.connected = True
         self.reachable = True
         self.fail_next = 0
+        self.block_reads = True
+        self.block_calls = []
         for spec in self.axes.values():
             self.d[spec["encoder_d"]] = spec["min_count"] + 1000
             if spec["type"] == "servo":
@@ -64,6 +66,13 @@ class FakePlc:
     def read_d(self, d):
         self._io()
         return self.d.get(d, 0)
+
+    def read_ds(self, d, count):
+        self._io()
+        self.block_calls.append((d, count))
+        if not self.block_reads:
+            raise ModbusError("PLC rejected function 3: 8303")
+        return [self.d.get(d + i, 0) for i in range(count)]
 
     def read_m(self, m):
         self._io()
@@ -395,3 +404,105 @@ def test_only_servo_axes_may_hold():
     profile["axes"]["x"]["hold"] = True
     with pytest.raises(ProfileError, match="only servo"):
         validate(profile)
+
+
+DIAGNOSTICS = {"z_error": 30, "z_stage": 31, "bus_errors": 95, "far": 400}
+
+
+def diagnosed(plc, diagnostics=DIAGNOSTICS):
+    profile = copy.deepcopy(PROFILE)
+    profile["diagnostics"] = dict(diagnostics)
+    return PlcBackend(validate(profile), False, io=plc, sleep=lambda _: None)
+
+
+def test_registers_are_grouped_into_reads_that_fit():
+    assert _runs([31, 30, 79, 80, 400, 30], 2, 100) == [(30, 50), (80, 1), (400, 1)]
+    assert _runs([], 2, 100) == []
+
+
+def test_a_block_read_decodes_consecutive_registers():
+    wire = Wire((0xFFFE, 0xFFFF, 5, 0, 0, 1))
+    modbus, _ = wire_modbus(wire)
+    assert modbus.read_ds(100, 3) == [-2, 5, 0x10000]
+    assert wire.sent[-1][7:] == struct.pack(">BHH", 3, 6842 + 200, 6)
+    with pytest.raises(ModbusError, match="one exchange"):
+        modbus.read_ds(100, 63)
+    assert len(wire.sent) == 1
+
+
+def test_diagnostics_are_read_in_blocks_with_every_sample():
+    plc = FakePlc()
+    plc.d.update({30: -20, 31: 101, 95: 7, 400: 3})
+    plc_backend = diagnosed(plc)
+    sample = plc_backend.read()
+    assert sample.positions == pytest.approx({"x": 0.1, "z": 0.01})
+    assert plc_backend.status["diagnostics"] == {"z_error": -20, "z_stage": 101, "bus_errors": 7, "far": 3}
+    assert plc_backend.status["diagnostics_error"] is None
+    assert plc.block_calls == [(30, 2), (95, 1), (400, 1)]
+    plc.d[31] = 0
+    plc_backend.read()
+    assert plc_backend.status["diagnostics"]["z_stage"] == 0 and plc.writes == []
+
+
+def test_a_backend_without_diagnostics_reads_none():
+    plc = FakePlc()
+    plc_backend = backend(plc, motion=False)
+    plc_backend.read()
+    assert "diagnostics" not in plc_backend.status and plc.block_calls == []
+
+
+def test_a_plc_without_block_reads_is_read_one_register_at_a_time():
+    plc = FakePlc()
+    plc.block_reads = False
+    registers = {f"r{d}": d for d in range(30, 30 + DIAGNOSTIC_SINGLE_READS + 2)}
+    plc.d.update({d: d * 10 for d in registers.values()})
+    plc_backend = diagnosed(plc, registers)
+    for _ in range(DIAGNOSTIC_BLOCK_ATTEMPTS):
+        assert plc_backend.read().positions
+        assert "block read failed" in plc_backend.status["diagnostics_error"]
+    assert plc_backend.status["diagnostics"] == dict.fromkeys(registers)
+    attempts = len(plc.block_calls)
+    plc_backend.read()
+    known = {k: v for k, v in plc_backend.status["diagnostics"].items() if v is not None}
+    assert len(known) == DIAGNOSTIC_SINGLE_READS and plc_backend.status["diagnostics_error"] is None
+    plc_backend.read()
+    assert plc_backend.status["diagnostics"] == {label: d * 10 for label, d in registers.items()}
+    assert len(plc.block_calls) == attempts
+
+
+def test_a_failed_diagnostics_read_keeps_the_position_sample():
+    plc = FakePlc()
+    plc.d[30] = -20
+    plc_backend = diagnosed(plc)
+    plc_backend.read()
+    working = plc.read_ds
+
+    def broken(d, count):
+        plc.connected = False
+        raise ModbusError("PLC I/O failed: timed out")
+
+    plc.read_ds = broken
+    sample = plc_backend.read()
+    assert sample.positions == pytest.approx({"x": 0.1, "z": 0.01})
+    assert "timed out" in plc_backend.status["diagnostics_error"]
+    assert plc_backend.status["diagnostics"]["z_error"] == -20  # the last known values stay
+    plc.read_ds = working
+    plc.ensure(retry_now=True)
+    plc.d[30] = 0
+    plc_backend.read()
+    assert plc_backend.status["diagnostics"]["z_error"] == 0 and plc_backend.status["diagnostics_error"] is None
+
+
+@pytest.mark.parametrize("diagnostics, message", [({"a": -1}, "D register number"), ({"a": 1.5}, "integer"),
+                                                  ({" ": 1}, "labels"), ([1], "object"),
+                                                  ({str(d): d for d in range(200)}, "at most")])
+def test_diagnostics_must_name_d_registers(diagnostics, message):
+    profile = copy.deepcopy(PROFILE)
+    profile["diagnostics"] = diagnostics
+    with pytest.raises(ProfileError, match=message):
+        validate(profile)
+
+
+def test_diagnostics_need_the_modbus_driver():
+    with pytest.raises(ProfileError, match="modbus driver"):
+        validate({**SIMULATOR, "diagnostics": {"a": 1}})
