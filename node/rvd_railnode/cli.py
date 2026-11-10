@@ -254,6 +254,18 @@ def status(args: argparse.Namespace) -> int:
             pose = "  ".join(f"{k} {v:.4f}" for k, v in where.items())
             print(f"  {name:<10}" + ("ok    " if tracker["valid"] else "STALE ") + f"{frame} {pose}"
                   + (f"  ({tracker['reason']})" if tracker.get("reason") else ""))
+    if args.diagnostics:
+        values = state["device"].get("diagnostics")
+        if not values:
+            print("diagnostics  none in the profile")
+        else:
+            error = state["device"].get("diagnostics_error")
+            print("diagnostics" + (f"  ({error})" if error else ""))
+            cells = {label: "-" if value is None else str(value) for label, value in values.items()}
+            left, right = max(map(len, cells)), max(map(len, cells.values()))
+            items = [f"{label:<{left}} {value:>{right}}" for label, value in cells.items()]
+            for row in range(0, len(items), 3):
+                print("  " + "    ".join(items[row:row + 3]))
     return 0
 
 
@@ -398,6 +410,7 @@ def parser() -> argparse.ArgumentParser:
         p.add_argument("--connection", type=Path, help="connection.json of a user")
         if name == "status":
             p.add_argument("--json", action="store_true")
+            p.add_argument("--diagnostics", action="store_true", help="also list the profile's PLC status registers")
         p.set_defaults(run=run)
     p = sub.add_parser("move", help="move axes to a position (--to) or by an offset (--by), then release them")
     p.add_argument("--config", type=Path, help="node.json of the node on this computer")

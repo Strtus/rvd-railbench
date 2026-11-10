@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 import socket
@@ -94,6 +95,35 @@ def test_status_and_stop_reach_the_local_node(initialized, capsys):
         assert "simulator" in out and "read-only" in out and re.search(r"^x\s+0\.000000", out, re.M)
         assert main(["stop", "--config", str(config_path)]) == 0
         assert "stopped" in capsys.readouterr().out
+
+
+def test_status_lists_the_plc_diagnostics_on_request(tmp_path, capsys):
+    pytest.importorskip("cryptography")
+    from plc_emulator import PlcEmulator
+    from test_plc import PROFILE
+
+    profile = copy.deepcopy(PROFILE)
+    profile["diagnostics"] = {"z_error": 30, "moves": 31}
+    with PlcEmulator(profile) as plc:
+        plc.set_d(30, -20)
+        profile["modbus"].update(host="127.0.0.1", port=plc.port, timeout_s=0.5)
+        (tmp_path / "plc.json").write_text(json.dumps(profile))
+        root = tmp_path / "node"
+        assert main(["init", "--directory", str(root), "--address", "10.0.0.5", "--port", str(free_port()),
+                     "--profile", str(tmp_path / "plc.json")]) == 0
+        capsys.readouterr()
+        with running(root) as (config_path, _):
+            assert main(["status", "--config", str(config_path)]) == 0
+            assert "diagnostics" not in capsys.readouterr().out
+            assert main(["status", "--config", str(config_path), "--diagnostics"]) == 0
+            out = capsys.readouterr().out
+            assert re.search(r"^diagnostics$", out, re.M) and re.search(r"z_error\s+-20\s+moves\s+0", out)
+
+
+def test_status_says_when_the_profile_has_no_diagnostics(initialized, capsys):
+    with running(initialized[0]) as (config_path, _):
+        assert main(["status", "--config", str(config_path), "--diagnostics"]) == 0
+        assert "none in the profile" in capsys.readouterr().out
 
 
 def test_move_goes_there_and_releases_control(initialized, capsys):

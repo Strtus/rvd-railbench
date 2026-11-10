@@ -66,6 +66,26 @@ def test_a_task_reaches_its_waypoint_through_the_driver(rig):
     node.release("alice", {"lease_id": lease["lease_id"]})
 
 
+def test_the_node_state_carries_the_profile_diagnostics():
+    profile = copy.deepcopy(PROFILE)
+    profile["diagnostics"] = {"z_error": 30, "moves": 31, "far": 300}
+    with PlcEmulator(profile, START) as plc:
+        plc.set_d(30, -20)
+        plc.set_d(31, 4)
+        profile["modbus"].update(host="127.0.0.1", port=plc.port, timeout_s=0.5)
+        node = Node(PlcBackend(profile, allow_motion=False), Settings(poll_s=0.05))
+        node.start()
+        try:
+            wait_for(lambda: node.snapshot()["device"].get("diagnostics", {}).get("moves") == 4)
+            device = node.snapshot()["device"]
+            assert device["diagnostics"] == {"z_error": -20, "moves": 4, "far": 0}
+            assert device["diagnostics_error"] is None
+            plc.set_d(31, 5)
+            wait_for(lambda: node.snapshot()["device"]["diagnostics"]["moves"] == 5)
+        finally:
+            node.close()
+
+
 def test_the_emergency_flag_stops_the_node(rig):
     node, plc = rig
     lease = node.acquire("alice", {"mode": "task", "axes": ["x"], "period_s": 0.2})

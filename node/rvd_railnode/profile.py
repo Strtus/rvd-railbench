@@ -13,6 +13,7 @@ AXES = ("x", "y", "z", "pitch", "yaw", "roll")
 LINEAR = ("x", "y", "z")
 TIMINGS = ("poll_s", "stall_timeout_s", "enable_timeout_s", "stop_timeout_s")
 PARK_SPEED_SHARE = 0.2  # a held axis parks at this share of its speed limit unless park_speed says otherwise
+MAX_DIAGNOSTICS = 128
 
 SIMULATOR: dict[str, Any] = {
     "driver": "simulator",
@@ -118,6 +119,14 @@ def _modbus(profile: dict[str, Any]) -> None:
         _check(interlock["identity"], "interlock.identity")
     if "emergency_m" in interlock:
         _integer(interlock["emergency_m"], "interlock.emergency_m")
+    diagnostics = _object(profile.get("diagnostics", {}), "diagnostics")
+    if len(diagnostics) > MAX_DIAGNOSTICS:
+        raise ProfileError(f"diagnostics accepts at most {MAX_DIAGNOSTICS} registers")
+    for label, d in diagnostics.items():
+        if not label.strip():
+            raise ProfileError("diagnostics labels must not be empty")
+        if _integer(d, f"diagnostics.{label}") < 0:
+            raise ProfileError(f"diagnostics.{label} must be a D register number")
     for name, axis in profile["axes"].items():
         kind = axis.get("type")
         if kind not in ("pulse", "servo"):
@@ -219,6 +228,8 @@ def validate(profile: Any) -> dict[str, Any]:
     for key in TIMINGS:
         if key in profile:
             _positive(profile[key], key)
+    if "diagnostics" in profile and profile["driver"] != "modbus":
+        raise ProfileError("diagnostics needs the modbus driver")
     (_modbus if profile["driver"] == "modbus" else _simulator)(profile)
     if "mocap" in profile:
         _mocap(profile)
