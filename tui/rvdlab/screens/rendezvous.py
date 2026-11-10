@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 import threading
@@ -43,7 +44,8 @@ class RendezvousScreen(Page):
             with Vertical(id="run-side"):
                 with Horizontal(classes="form-row"):
                     yield Static("rail", classes="form-key mid")
-                    targets = [("simulator", "sim")] + ([("rail node", "node")] if self.lab.node_path else [])
+                    node = [("rail node", "node"), ("rail node, z simulated", "node-xy")]
+                    targets = [("simulator", "sim")] + (node if self.lab.node_path else [])
                     yield Select(targets, id="target", allow_blank=False, compact=True)
                 yield Static("START  ·  HILL FRAME [m]", classes="form-title")
                 with Horizontal(classes="form-row"):
@@ -123,7 +125,9 @@ class RendezvousScreen(Page):
             context = "rail_main is not built: cmake --preset release && cmake --build --preset release"
         elif self.on_node():
             controller = f"{p.profile.controller.type} {p.profile.controller.backend}"
-            context = (f"REAL RAIL through the rail node · {controller} · starts where the rail is · "
+            sim = self.simulated_axes()
+            rail = f"REAL RAIL x y, {' '.join(sim)} simulated" if sim else "REAL RAIL"
+            context = (f"{rail} through the rail node · {controller} · starts where the rail is · "
                        f"results in {p.relative(p.experiments_dir)}")
         else:
             source = (f"rail profile {p.rail_profile}" if p.rail_profile
@@ -160,7 +164,10 @@ class RendezvousScreen(Page):
         self.stop()
 
     def on_node(self) -> bool:
-        return self.query_one("#target", Select).value == "node"
+        return self.query_one("#target", Select).value in ("node", "node-xy")
+
+    def simulated_axes(self) -> tuple[str, ...]:
+        return ("z",) if self.query_one("#target", Select).value == "node-xy" else ()
 
     @on(Select.Changed, "#target")
     def target_changed(self) -> None:
@@ -264,10 +271,10 @@ class RendezvousScreen(Page):
             self.fail("rail_main is not built")
             return
         steps = self.query_one("#max-steps", Input).value.strip()
-        self.prepare_node_run(int(steps) if steps else -1)
+        self.prepare_node_run(int(steps) if steps else -1, self.simulated_axes())
 
     @work(thread=True, exclusive=True, group="node-run")
-    def prepare_node_run(self, steps: int) -> None:
+    def prepare_node_run(self, steps: int, simulated: tuple[str, ...] = ()) -> None:
         try:
             _, state = self.node_state()
         except Exception as error:
@@ -278,16 +285,18 @@ class RendezvousScreen(Page):
         text = ("PFCR will drive the REAL RAIL from where it stands now.\n"
                 f"rail  {here[0]:.4f}  {here[1]:.4f}  {here[2]:.4f} m\n"
                 f"Hill  {hill[0]:.3f}  {hill[1]:.3f}  {hill[2]:.3f} m\n"
-                f"steps {steps if steps >= 0 else 'until docked or stopped'}\n\n"
+                f"steps {steps if steps >= 0 else 'until docked or stopped'}\n"
+                + (f"simulated {' '.join(simulated)}: that rail axis stays where it is\n" if simulated else "")
+                + "\n"
                 "Watch the rail and keep the emergency stop within reach. F6 or F9 stops it.")
         self.app.call_from_thread(self.app.push_screen, ConfirmModal("Run on the rail", text, "Run"),
-                                  lambda ok: self.arm_node(steps) if ok else None)
+                                  lambda ok: self.arm_node(steps, simulated) if ok else None)
 
     @work(thread=True, exclusive=True, group="node-run")
-    def arm_node(self, steps: int) -> None:
+    def arm_node(self, steps: int, simulated: tuple[str, ...] = ()) -> None:
         try:
             bridge = Bridge(connect(self.lab.node_path),  # type: ignore[arg-type]
-                            log=lambda m: self.app.call_from_thread(self.log_line, m))
+                            log=lambda m: self.app.call_from_thread(self.log_line, m), simulated=simulated)
             bridge.acquire()
         except Exception as error:
             self.app.call_from_thread(self.fail, f"cannot take control of the rail: {error}")
@@ -393,6 +402,8 @@ class RendezvousScreen(Page):
             if self.bridge is not None:
                 bridge, self.bridge = self.bridge, None
                 await asyncio.to_thread(bridge.close)
+                if directory.is_dir():
+                    (directory / "rail_node.json").write_text(json.dumps(bridge.describe(), indent=1) + "\n")
         self.consume(tail.poll())
         self.finish(directory, code)
 

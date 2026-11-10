@@ -3,6 +3,7 @@ import io
 import json
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from rvd_railnode.sim import SimBackend  # noqa: E402
 
 from rvdlab.app import RvdLabApp  # noqa: E402
 from rvdlab.project import find_build  # noqa: E402
-from rvdlab.remote import Bridge, connect, connection_path, move, remote_override  # noqa: E402
+from rvdlab.remote import SPEED_FLOOR, Bridge, SimAxis, connect, connection_path, move, remote_override  # noqa: E402
 
 START = (18.0, 0.03, -0.02)
 
@@ -58,9 +59,34 @@ def test_the_bridge_reads_commands_and_holds(node):
     assert 0 <= values[6] < 0.5 and values[9] == 0
     assert bridge.answer("SEND 0 18.1 0.03 -0.02 0.1 0 0".split()) == "ACK 0"
     assert rail.snapshot()["target"]["x"] == pytest.approx(18.1)
-    assert rail.snapshot()["speed"]["y"] == pytest.approx(rail.axes["y"].min_speed)
+    assert rail.snapshot()["speed"]["y"] == pytest.approx(SPEED_FLOOR * rail.axes["y"].max_speed)
+    assert rail.snapshot()["speed"]["x"] == pytest.approx(0.1)
     assert bridge.answer(["HOLD"]) == "OK"
     assert rail.snapshot()["control"] is None
+    bridge.close()
+
+
+def test_a_simulated_axis_runs_at_the_commanded_speed_and_stops_at_the_target():
+    axis = SimAxis(0.28, 10.0)
+    assert axis.at(12.0) == 0.28
+    axis.command(0.29, 0.004, 10.0)
+    assert axis.at(11.0) == pytest.approx(0.284) and axis.at(20.0) == pytest.approx(0.29)
+    axis.command(0.27, 0.002, 11.0)
+    assert axis.at(12.0) == pytest.approx(0.282) and axis.at(30.0) == pytest.approx(0.27)
+
+
+def test_a_simulated_axis_stays_on_the_rail_and_moves_in_the_bridge(node):
+    connection, rail = node
+    bridge = Bridge(connect(connection), simulated=("z",))
+    bridge.acquire()
+    assert rail.snapshot()["control"]["axes"] == ["x", "y"]
+    assert bridge.answer("SEND 0 18.1 0.03 -0.01 0.1 0 0.01".split()) == "ACK 0"
+    assert "z" not in rail.snapshot()["target"]
+    time.sleep(0.3)
+    values = pos(bridge.answer(["READ"]))
+    assert values[2] == pytest.approx(-0.02 + 0.01 * 0.3, abs=0.002) and values[5] == values[2]
+    assert rail.snapshot()["position"]["z"] == pytest.approx(START[2])
+    assert bridge.describe()["simulated_axes"] == ["z"]
     bridge.close()
 
 
@@ -238,3 +264,25 @@ async def test_a_run_on_the_node_ends_with_the_rail_released(node, tmp_path, pro
         await settle(pilot, lambda: screen.outcome is not None, 60)
         assert screen.outcome[0] == "LIMIT_REACHED", screen.outcome
         assert rail.snapshot()["control"] is None and screen.bridge is None
+
+
+@pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
+async def test_a_run_with_z_simulated_leaves_the_rail_z_alone(node, tmp_path, profiles):
+    connection, rail = node
+    app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)
+    async with app.run_test(size=(140, 60)) as pilot:
+        await pilot.press("3", "enter")
+        screen = app.screen
+        screen.query_one("#target", Select).value = "node-xy"
+        screen.query_one("#max-steps", Input).value = "3"
+        await pilot.pause()
+        assert "z simulated" in str(screen.query_one("#run-context", Static).render())
+        await pilot.press("f5")
+        await confirm(pilot, app)
+        await settle(pilot, lambda: screen.outcome is not None, 60)
+        assert screen.outcome[0] == "LIMIT_REACHED", screen.outcome
+        state = rail.snapshot()
+        assert state["control"] is None and state["position"]["z"] == pytest.approx(START[2])
+        assert state["position"]["x"] != pytest.approx(START[0], abs=1e-6)
+        note = json.loads(next((tmp_path / "experiments").glob("*/rail_node.json")).read_text())
+        assert note["simulated_axes"] == ["z"] and set(note["speed_floor_m_s"]) == {"x", "y"}

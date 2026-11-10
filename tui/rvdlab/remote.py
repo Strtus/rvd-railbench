@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import socket
 import threading
@@ -12,6 +13,24 @@ from typing import Any, Callable
 AXES = ("x", "y", "z")
 # A run through the network and a PLC needs looser timing than a simulated one; rail_main still checks them.
 REMOTE_TIMING = {"clock_skew_s": 0.1, "communication_timeout_s": 0.8, "measurement_late_s": 0.5}
+# A pulse axis started at a crawl keeps the crawl's acceleration for the rest of the move, so commands to the
+# rail never carry less than this fraction of the axis speed limit.
+SPEED_FLOOR = 0.1
+
+
+class SimAxis:
+    """An axis the bridge integrates itself: it runs at the commanded speed and stops at the target."""
+
+    def __init__(self, position: float, now: float) -> None:
+        self.position, self.target, self.speed, self.since = position, position, 0.0, now
+
+    def at(self, now: float) -> float:
+        step = self.speed * max(0.0, now - self.since)
+        gap = self.target - self.position
+        return self.target if abs(gap) <= step else self.position + math.copysign(step, gap)
+
+    def command(self, target: float, speed: float, now: float) -> None:
+        self.position, self.target, self.speed, self.since = self.at(now), target, speed, now
 
 
 class RemoteError(RuntimeError):
@@ -96,11 +115,17 @@ def park(node: Any, cancel: threading.Event, progress: Callable[[dict[str, Any]]
 
 
 class Bridge:
-    """Holds a stream lease on x, y, z and answers rail_main's READ / SEND / HOLD lines (see bridge.hpp)."""
+    """Holds a stream lease on x, y, z and answers rail_main's READ / SEND / HOLD lines (see bridge.hpp).
 
-    def __init__(self, node: Any, log: Callable[[str], None] = lambda _: None) -> None:
+    Axes named in simulated stay where they are on the rail; the bridge integrates them itself instead."""
+
+    def __init__(self, node: Any, log: Callable[[str], None] = lambda _: None, simulated: tuple[str, ...] = ()) -> None:
         self.node = node
         self.log = log
+        self.simulated = tuple(a for a in AXES if a in simulated)
+        self.real = tuple(a for a in AXES if a not in simulated)
+        self.sim: dict[str, SimAxis] = {}
+        self.floor: dict[str, float] = {}
         self.stop_event = threading.Event()
         self.finished = threading.Event()
         self.listener = socket.create_server(("127.0.0.1", 0))
@@ -113,11 +138,21 @@ class Bridge:
         caps = self.node.capabilities()
         if not caps["motion_enabled"]:
             raise RemoteError("the node is read-only; restart it with --allow-motion")
-        frozen = [a for a in AXES if a not in caps["axes"] or not caps["axes"][a]["motion"]]
+        frozen = [a for a in self.real if a not in caps["axes"] or not caps["axes"][a]["motion"]]
         if frozen:
             raise RemoteError(f"the node does not move {', '.join(frozen)}")
         self.axes = caps["axes"]
-        self.node.acquire("stream", AXES, period_s=period_s, timeout_s=timeout_s)
+        self.floor = {a: max(SPEED_FLOOR * self.axes[a]["max_speed"], self.axes[a]["min_speed"]) for a in self.real}
+        if self.simulated:
+            here, now = self.node.state(fresh=True)["position"], time.monotonic()
+            self.sim = {a: SimAxis(float(here[a]), now) for a in self.simulated}
+        self.node.acquire("stream", self.real, period_s=period_s, timeout_s=timeout_s)
+
+    def describe(self) -> dict[str, Any]:
+        return {"simulated_axes": list(self.simulated),
+                "simulated_start": {a: s.position for a, s in self.sim.items()} if self.sim else {},
+                "simulated_model": "commanded speed, stops at the target" if self.sim else None,
+                "speed_floor_m_s": self.floor}
 
     def start(self) -> None:
         self._thread.start()
@@ -192,14 +227,19 @@ class Bridge:
         if stop and not self.stop_event.is_set():
             self.log(f"the node ended control: {state['fault'] or state['reason']}")
         age = state["server_time"] - encoders["sample_time"] + rtt / 2
-        position = " ".join(f"{state['position'][a]:.9f}" for a in AXES)
+        now = time.monotonic()
+        here = {a: self.sim[a].at(now) if a in self.sim else state["position"][a] for a in AXES}
+        position = " ".join(f"{here[a]:.9f}" for a in AXES)
         # The node clock may tick in 15.6 ms steps (Windows, Python < 3.13).
         return f"POS {position} {position} {age:.6f} {rtt / 2 + 0.016:.6f} {encoders['seq']} {int(stop)}"
 
     def _send(self, values: list[float]) -> str:
         if self.stop_event.is_set():
             return "ACK 1"
-        target, velocity = values[:3], values[3:]
-        speed = {a: max(abs(v), self.axes[a]["min_speed"]) for a, v in zip(AXES, velocity)}
-        self.node.setpoint(dict(zip(AXES, target)), speed)
+        target, velocity = dict(zip(AXES, values[:3])), dict(zip(AXES, values[3:]))
+        now = time.monotonic()
+        for a, axis in self.sim.items():
+            axis.command(target[a], abs(velocity[a]), now)
+        speed = {a: max(abs(velocity[a]), self.floor[a]) for a in self.real}
+        self.node.setpoint({a: target[a] for a in self.real}, speed)
         return f"ACK {int(self.stop_event.is_set())}"
