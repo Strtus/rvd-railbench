@@ -24,6 +24,19 @@ the node's TLS identity. `rvdlab --check` checks the installation and runs a
 short simulation; it does not probe hardware. `rvdlab --version` reports the
 interface and runtime versions.
 
+The first interactive launch shows the Braille orbital welcome animation.
+Press any key to skip it; otherwise it finishes after about 19 seconds. The
+normal rail setup or home screen follows. RVDLAB records completion or skipping
+in `~/.rvdlab/welcome-seen` (under `RVDLAB_HOME` when set), so later launches go
+straight to the interface. `rvdlab --welcome` replays the animation;
+`rvdlab --no-welcome` skips it for one launch. `--check` and `--version` never
+play it. Ctrl+Q still quits the application.
+
+The original animation fits in a 112-column, 33-row terminal; it scales down in
+smaller windows. Use a terminal font with Unicode Braille support, such as
+Cascadia Mono. The animation is drawn by the Python interface on every platform
+and does not require PowerShell.
+
 `install.sh` and `install.ps1` offer release-archive installation with SHA-256
 checks and a source-build fallback. They currently install only `tui/` into
 their environment; node access also needs `node/` installed there. The combined
