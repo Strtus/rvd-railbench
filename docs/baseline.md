@@ -1,18 +1,24 @@
-# Baseline (2026-11-06)
+# Numerical baseline
+
+This records the original controller at `4670f55`, measured on 2026-11-06.
+The I/O and CLI behavior below describes that version. Current operation is
+documented in [configuration](configuration.md) and
+[hardware integration](hardware-integration.md).
+
+## Original measurements
 
 Original commit: `4670f55` (Add rail deployment controller).
 
 Windows / MinGW GCC 13.2, Release, Ninja: configured and built successfully;
-the original `golden_builtin` CTest passed. No failing gating tests.
+the original `golden_builtin` CTest passed.
 Commands: `cmake -S . -B build-baseline -G Ninja`,
 `cmake --build build-baseline`, `ctest --test-dir build-baseline --output-on-failure`.
 
 The policy test covers 1,000 observations (maximum action difference 2.98e-7,
 limit 1e-5). All eight forced-action controller runs pass: observation limit
 1e-6, force/state limit 1e-9, identical termination and safety flags.
-Free-running results are diagnostic, as in the original test: runs 1 and 3
-already differ at decision boundaries. This refactor must not hide that drift,
-relax tolerances, or regenerate Golden data.
+Free-running results are diagnostic: runs 1 and 3 differ at decision boundaries.
+Their original reference data and tolerances are retained.
 
 Numerical core: CWH, history, CBF-QP, backup and actuator emulation are in
 `src/pfcr_controller.cpp`; policy inference is in two separate backends.
@@ -30,9 +36,21 @@ for pre/post-refactor comparison. Windows timer resolution uses winmm; the
 controller itself is platform neutral. ONNX Runtime is optional, located via
 `ONNXRUNTIME_ROOT`; normal tests require no downloads.
 
-Policy binary, ONNX, generated parameter header and all Golden CSV files are
-protected inputs. Preserve their contents, even if their organization changes.
+The policy binary, ONNX model, generated parameter header and Golden CSV files
+retain their original contents.
 
 Linux baseline was subsequently reproduced from a separate detached checkout of
 `4670f55` (Ubuntu 24.04 / GCC 13.3, Release, Ninja): the original build and
 `golden_builtin` also pass. The original checkout was not modified.
+
+## Current regression contract
+
+The original mathematics, generated constants and Golden data remain covered
+by `tests/regression/protected_inputs.json`. The 12-step application trace is
+stored in `tests/regression/application_baseline.json`; its comparison allows
+one last printed CSV decimal (1e-6). Golden tolerances remain as listed above.
+
+Subsequent changes add bounded/PLC simulation, lead commands, RVDLAB and the
+rail-node hardware path. Their tests supplement this numerical baseline;
+they do not replace its reference data. See [development](development.md) for
+the current test commands.

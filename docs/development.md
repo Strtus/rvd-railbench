@@ -1,65 +1,102 @@
 # Development
 
-Requires a C++17 compiler and CMake 3.16+ (3.21+ for presets); Ninja for presets.
-Tests additionally use Python 3.9+ standard library. Runtime has no Python,
-network or third-party dependency unless ONNX is enabled. On Windows use an
-x64 Visual Studio developer shell, or a MinGW installation with runtime DLLs
-on PATH. CI covers GCC/Linux and MSVC/Windows in Debug and Release.
+RVD-RailBench contains the C++ controller/runtime, the RVDLAB terminal interface
+(`tui/`), and the rail-node hardware service (`node/`). See
+[configuration](configuration.md) for runs and records,
+[hardware integration](hardware-integration.md) for node setup, and
+[safety](safety.md) for stop and fault behavior. Original numerical results
+are retained in [baseline](baseline.md).
+
+## Install and run
+
+Python 3.10+ is required for RVDLAB and rail-node. Install the combined package
+in a Python environment, or use pipx/uv:
+
+```sh
+python -m pip install "rvd-railbench[node]"
+rvdlab --check
+rvdlab
+```
+
+The package includes `rail_main`, `rail_replay`, the policy, default configs,
+`rvdlab`, and `rail-node`. The `node` extra adds `cryptography`, used to create
+the node's TLS identity. `rvdlab --check` checks the installation and runs a
+short simulation; it does not probe hardware. `rvdlab --version` reports the
+interface and runtime versions.
+
+`install.sh` and `install.ps1` offer release-archive installation with SHA-256
+checks and a source-build fallback. They currently install only `tui/` into
+their environment; node access also needs `node/` installed there. The combined
+Python package includes both.
+
+## Build from source
+
+Requires C++17 and CMake 3.16+; presets require CMake 3.21+ and Ninja. On Windows,
+use an x64 Visual Studio developer shell or MinGW with its runtime DLLs on PATH.
+The standalone C++ simulator and replay tool do not require Python at runtime.
 
 ```sh
 cmake --preset release
 cmake --build --preset release
 ctest --preset release
-# or the original configuration style:
-cmake -S . -B build-local -DBUILD_TESTING=ON
-cmake --build build-local --config Release
-ctest --test-dir build-local -C Release --output-on-failure
+python -m pip install -e "./node[test]" -e "./tui[test]"
+rvdlab --root . --check
 ```
 
-`dev` is Debug, `release` is Release, `minimal` disables tests and Windows timer
-resolution. `RVD_SIMULATION_ONLY=OFF` is a configuration error: no hardware
-backend exists. `RVD_WINDOWS_TIMER` controls winmm use. Tests always operate on
-simulation or files; they never discover devices. Generated runs are ignored
-under `experiments/` or `build*/`.
+`dev` builds Debug; `release` builds Release; `minimal` omits tests and the
+Windows timer-resolution request. Without presets, use `cmake -S . -B build-local`,
+then build and run CTest in that directory.
 
-The `pfcr_core` / `rvd::pfcr` target retains the algorithm and public PFCR API.
-`rvd_runtime` / `rvd::runtime` supplies adapters, supervisor, configuration,
-simulation and experiments. `rail_main` and `rail_replay` are small entry points.
-New controllers implement `IController`: initialize an artifact, reset state,
-update an `Observation`, report status/diagnostics. An observation optionally
-contains a state estimate and/or typed camera, point-cloud and pose samples;
-there is no universal 36-element observation requirement. Only the PFCR adapter
-requires Hill state and uses model-derived velocity, exactly as the original app.
-Its history, safety logic and actuator state remain owned by `pfcr::Controller`.
+`RVD_SIMULATION_ONLY=OFF` and the legacy `--lab` route remain unsupported.
+Despite its name, `RVD_SIMULATION_ONLY=ON` does **not** disable `--bridge`:
+hardware runs use the Python node through that bridge. `RVD_WINDOWS_TIMER`
+controls winmm use.
 
-## Numerical regression
+## Architecture
 
-The original mathematical source and generated parameter header are retained
-at their existing paths and checked by `protected_inputs`. Golden CSV files
-remain under `golden/`; none were regenerated. `golden_builtin` retains its
-original thresholds: policy 1e-5; forced-action observation 1e-6; force and state
-1e-9; exact termination and safety flags. Free-running drift is reported, not
-judged, as in the original test (see `baseline.md`). A separate application
-fixture was captured from commit `4670f55` before refactoring, with zero noise
-and 12 steps; comparison permits one last printed CSV decimal (1e-6).
+| Component | Responsibility |
+|---|---|
+| `pfcr_core` / `rvd::pfcr` | PFCR mathematics and policy inference |
+| `rvd_runtime` / `rvd::runtime` | Configuration, frame mapping, supervision, simulation, bridge and records |
+| `rail_main`, `rail_replay` | Run a controller; verify recorded controller inputs |
+| `tui/rvdlab` | Profiles, motion control, rendezvous, telemetry and experiment management |
+| `node/rvd_railnode` | Exclusive hardware ownership, Modbus, VRPN, HTTPS and motion supervision |
 
-Target-level `-fno-fast-math -ffp-contract=off` or `/fp:precise` protects arithmetic
-order. Do not enable fast-math or change trained constants to repair a failing
-test. Legacy controller mathematics is excluded from formatting churn. Native
-artifact serialization assumes the original little-endian IEEE float format;
-current validation is on x64 platforms.
+Controllers implement `IController`. The PFCR adapter accepts Hill state;
+`pfcr::Controller` constructs the 36-element policy observation and owns the
+model-derived velocity, history, safety logic and actuator state.
 
-CTest labels: `unit`, `integration`, `regression`, `faults`, and optional `onnx`.
-Unit tests use throwing checks, not assertions disabled by Release builds.
-Fault tests cover clocks, frozen/out-of-order sensors, physical operating
-limits, missing status, invalid outputs, timeouts, simulator dynamics and I/O
-failures. Integration tests check command-line failure paths, baseline
-compatibility, repeated deterministic logs, metadata, and replay corruption.
+## Tests and checks
+
+Run the Python suites separately: both use a top-level `conftest` module.
+
+```sh
+python -m pytest -c node/pyproject.toml node/tests -q
+python -m pytest -c tui/pyproject.toml tui/tests -q
+python tools/check_format.py --executable clang-format-18
+```
+
+CTest covers Golden regression, configuration, runtime faults, simulation,
+bridge integration and replay. Node tests use simulated axes, fake registers,
+a Modbus PLC emulator and a local VRPN server. Interface tests exercise Textual
+screens and node runs; build the C++ executables first to include those runs.
+These suites use local test services, not lab equipment.
+
+CI builds GCC/Linux and MSVC/Windows in Debug and Release, runs node tests on
+Python 3.10/3.13 on both systems, and runs the interface on Linux/Python 3.12.
+It also checks formatting, clang-tidy and the optional ONNX backend. For local
+clang-tidy, configure `dev` with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, then run
+`run-clang-tidy-18 -p build/dev -quiet 'src/(core|control|runtime|simulation)/'`.
+
+`protected_inputs` checks the original mathematics, constants and Golden data.
+Golden limits remain 1e-5 for policy, 1e-6 for forced-action observations and
+1e-9 for force/state, with exact status and safety flags. The 12-step application
+fixture allows one last printed CSV decimal (1e-6). Preserve the existing
+floating-point order (`-fno-fast-math -ffp-contract=off` or `/fp:precise`).
 
 ## Optional ONNX
 
-Install a compatible ONNX Runtime package separately (CI pins and verifies
-1.20.1). Normal configure/build/test steps never download it.
+Install ONNX Runtime separately; CI uses 1.20.1.
 
 ```sh
 cmake -S . -B build-onnx -DRVD_ENABLE_ONNX=ON -DONNXRUNTIME_ROOT=/path/to/onnxruntime
@@ -67,24 +104,19 @@ cmake --build build-onnx --config Release
 ctest --test-dir build-onnx -C Release --output-on-failure
 ```
 
-On a fresh non-preset configuration, setting `ONNXRUNTIME_ROOT` also enables the
-backend for legacy workflows. Presets explicitly disable it; override
-`RVD_ENABLE_ONNX=ON` there. Requested ONNX without support fails instead of
-silently switching backend. Signature, types, dimensions, names and SHA-256
-are verified. Windows DLLs are staged beside executables. Policy files moved
-to `policies/<model-id>/`; their bytes are unchanged. `--model-dir` remains
-supported; the original default `model/<model-id>` redirects if absent.
+Presets disable ONNX unless overridden. A fresh non-preset configuration also
+enables it when `ONNXRUNTIME_ROOT` is supplied. Requested ONNX support fails
+explicitly if unavailable. Windows DLLs are staged beside the executables.
 
-## Quality checks
+## Packaging and provenance
 
-```sh
-python3 tools/check_format.py --executable clang-format-18
-cmake --preset dev -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-run-clang-tidy-18 -p build/dev -quiet 'src/(core|control|runtime|simulation)/'
-```
+The root `pyproject.toml` builds the combined package with scikit-build-core.
+Version comes from `CMakeLists.txt`; keep the Python package versions in sync.
+The release workflow builds Linux/Windows archives, platform wheels on
+Linux/Windows/macOS, and an sdist. Tags publish GitHub releases; PyPI publishing
+also requires the repository's `PYPI_PUBLISH` variable and trusted publisher.
+Intermediate release artifacts are retained for seven days.
 
-Use `--fix` to apply the project's style to new/refactored files. CI runs both
-checks. The original controller source and Golden test are deliberately kept
-out of style-only rewrites. Reconfigure CMake after committing before producing
-a research run: metadata records the commit/dirty state at configuration time,
-not a guess about a later checkout.
+Reconfigure CMake before producing a research run: metadata captures commit and
+dirty state at configuration time. A source installation is needed for changes
+on `main` that have not yet been included in a release tag.

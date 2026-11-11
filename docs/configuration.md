@@ -1,123 +1,140 @@
 # Configuration and experiments
 
-Configuration uses a small strict INI schema to avoid a runtime dependency or a
-home-grown YAML parser. YAML is not supported. Files contain `[section]`,
-`key = value`, whole-line `#`/`;` comments, finite decimal numbers, `true`/`false`,
-and comma-separated triples. Quoting, inline comments, includes and environment
-expansion are unsupported. Unknown keys, duplicate keys within one file,
-malformed values and incompatible profiles fail before I/O.
+## Runtime configuration
+
+`rail_main` uses strict INI files: sections, `key = value`, whole-line `#`/`;`
+comments, finite numbers, booleans and comma-separated triples. Unknown or
+duplicate keys within one file are rejected. Inline comments, quoting,
+includes and environment expansion are unsupported.
 
 ```sh
 build/release/rail_main --config configs/rail.ini --config configs/pfcr_dqp.ini --config configs/simulation.ini --fast --max-steps 12 --experiment-dir experiments/example
 build/release/rail_replay experiments/example
 ```
 
-Use `.exe` on Windows. A limited run returns **1** with `MAX_STEPS`, preserving
-the original CLI. Docking returns 0, runtime faults 1, configuration/exception
-failures 2, initial measurement failures 3. Config files apply in order; CLI
-options override them regardless of argument order. No implicit file is loaded:
-absent files use validated compatibility defaults. The three checked-in files
-are the complete configurable schema except optional `[experiment] directory`.
-Every run stores a fully expanded, reloadable snapshot.
+Use `.exe` on Windows. Config files apply in order; CLI options override them
+regardless of argument order. The standalone executable loads no implicit
+config files. The three files in `configs/` list the INI keys, apart from
+optional `[experiment] directory`. Every run saves the resolved configuration.
 
-`rail.ini` defines travel [m], speed [m/s], acceleration [m/s^2], freshness,
-clock-skew/jitter/communication thresholds [s], tracking tolerance [m] and
-latency compensation. These are simulation defaults, not measured hardware
-ratings. `pfcr_dqp.ini` selects controller, artifact identity, backend, period
-and observation warning threshold. PFCR period must be exactly 1 s. The compiled
-CWH/CBF/backup constants, 36-to-3 policy, history and original app actuator
+| File | Contents |
+|---|---|
+| `rail.ini` | Travel, speed, acceleration, timing, tracking, command mode and Hill-to-rail mapping |
+| `pfcr_dqp.ini` | Controller, model identity, backend, period and observation warning threshold |
+| `simulation.ini` | Plant mode, noise, delay, fault injection, seed, start and step limit |
+
+PFCR runs at a 1 s period. Its trained constants, policy, history and actuator
 profile (tau=2 s, scale=.85 per axis, deadzone=.025 N, controller tracking
-tolerance=1 m) cannot be changed through these files.
+tolerance=1 m) are fixed. The example rail limits are simulation settings;
+configure the runtime and node profiles for the rig being used.
 
-`rail.command_mode` selects how the rail is commanded. `arrive` (default, the
-original behavior) sends each period a segment that ends at the next controller
-state, re-anchored to the measurement. `lead` integrates the reference from the
-realized force without re-anchoring, sends the reference speed plus
-`tracking_gain_per_s` times the reference error, and places the target `lead_s`
-beyond the period as a stop point. The correction only uses the remaining speed
-and acceleration headroom. The error uses encoder feedback when a measurement
-reports it, otherwise the motion-capture position. Tracking supervision
-compares motion capture with the reference in both modes.
-`sensor_disagreement_m` bounds motion capture against encoders when both exist;
-a bit-identical motion-capture pose while the encoders move is a fault.
+Exit codes are 0 for docking, 1 for a runtime fault or step limit, 2 for
+configuration/exception failures, and 3 for rejected initial measurements.
+A step limit is recorded as `LIMIT_REACHED` / `MAX_STEPS`.
 
-## Frames
+## RVDLAB profiles
 
-Hill coordinates are radial x (docking port on +x), along-track y, cross-track z.
-Rail coordinates are physical Cartesian axes in metres. The mapping is exactly:
+Start `rvdlab` and use Rail Setup to save travel, speed/acceleration limits and
+the Hill-to-rail mapping. **Suggest mapping** fits reference approaches to the
+rail; **Validate** runs the deployment start set in simulation.
 
-```
+By default, RVDLAB loads the controller and simulation configs plus the active
+rail profile, or the example configs if no profile is active. Explicit
+`--config FILE` arguments replace that selection. This differs from the
+standalone executable's no-implicit-config behavior.
+
+| Data | Location / override |
+|---|---|
+| Profiles and experiments, installed wheel | `~/.rvdlab/profiles`, `~/.rvdlab/experiments`; base set by `RVDLAB_HOME` |
+| Profiles and experiments, source checkout | `<root>/profiles`, `<root>/experiments` |
+| Explicit directories | `--profiles`, `--experiments`, then `RVDLAB_PROFILES`, `RVDLAB_EXPERIMENTS` |
+| Node connection | `--node`, then `RVDLAB_NODE`, then `<RVDLAB_HOME or ~/.rvdlab>/node/connection.json` |
+
+The archive installers set the profile/experiment directories under
+`RVDLAB_HOME`. A node connection folder contains `connection.json` and its CA
+certificate. Node JSON configuration is described in
+[hardware integration](hardware-integration.md).
+
+## Command modes and frames
+
+`rail.command_mode = arrive` (default) commands a segment ending at the next
+controller state, re-anchored to each measurement. `lead` integrates the
+reference from realized force, adds `tracking_gain_per_s` times the reference
+error to its speed, and places a stop target `lead_s` beyond the period.
+The correction uses the remaining speed and acceleration headroom. It uses
+encoders when available, otherwise the primary position measurement.
+
+Tracking supervision compares the primary position with the reference.
+`sensor_disagreement_m` checks primary position against encoders, and
+`MEASUREMENT_REPEATED` detects a bit-identical primary position while encoders
+move. On the current hardware bridge, both fields contain encoder positions;
+VRPN is a separate node sensor.
+
+Hill coordinates are radial x (docking port on +x), along-track y and
+cross-track z. The mapping to rail metres is:
+
+```text
 rail[axis[j]] = target[axis[j]] + sign[j] * scale[j] * hill[j]
 hill[j] = sign[j] * (rail[axis[j]] - target[axis[j]]) / scale[j]
 ```
 
-Axes must be a permutation, signs +1/-1, scales finite/positive and invertible.
-Defaults remain axes 0,1,2; signs +1,+1,+1; scales 1,.1,.1; target 0,0,0.
-This anisotropic experiment mapping is not a rigid-body sensor extrinsic.
-Motion-capture, camera, LiDAR 1/2 and target-body frames have separate enum tags.
-No calibration between those frames is presumed or used: measured extrinsics,
-pose conventions and sensor time calibration are required before integration.
-`Pose` stores metres and a w,x,y,z quaternion. PFCR rejects non-Hill estimates.
+Axes form a permutation, signs are +1/-1 and scales are positive. Defaults are
+axes 0,1,2; signs +1,+1,+1; scales 1,.1,.1; target 0,0,0. This experiment scaling
+is separate from the node's optional mocap-to-rail affine map.
 
-## Simulation
+## Simulation and node runs
 
-`--bounded` (or `simulation.mode = bounded`) activates finite-duration dynamics:
-position and velocity evolve with bounded speed and acceleration in <=1 ms
-integration steps, including bounded braking on hold. Arrival is not guaranteed
-for infeasible commands; tracking supervision detects missed targets. The
-original teleport model remains the default `ideal` compatibility mode.
+| Mode | Behavior |
+|---|---|
+| `ideal` | Default compatibility model; position jumps to the target |
+| `bounded` / `--bounded` | Speed/acceleration-limited motion and braking, integrated in steps of at most 1 ms |
+| `plc` / `--plc` | Positioning drive with `plc_delay_s` and `plc_acceleration_m_s2`; stops at its target and accepts retargeting while moving |
 
-`--plc` (or `simulation.mode = plc`) models positioning drives: each command
-takes effect after `plc_delay_s`, the axis moves at the commanded speed
-magnitude (capped by the rail speed) with `plc_acceleration_m_s2`, decelerates
-to rest at the target and waits there, and a new target while moving is
-followed without stopping. `--sim-trace FILE` records plant position, velocity,
-target and speed every 10 ms in bounded and PLC modes. The simulator reports
-encoder positions unless `encoder = false`; `repeat_pose_at` makes motion
-capture repeat its last pose with fresh stamps and frame numbers.
+`--sim-trace FILE` records plant position, velocity, target and speed every
+10 ms in bounded/PLC modes. Encoders are reported unless `encoder = false`.
+`repeat_pose_at` freezes the primary pose with fresh timestamps/frame numbers;
+`freeze_at` freezes the measurement stream. Read/send failures use zero-based
+call counts, including initial read zero; `-1` disables an injection.
 
-`--fast` uses a deterministic virtual monotonic clock; it now exercises freshness
-and frozen-frame checks too. Ordinary execution uses `steady_clock` and sleeps
-to absolute deadlines. Measurement noise, latency, constant sensor bias,
-read/send failure counts, and freezing are configurable. Bounded mode samples
-position history at acquisition time; ideal mode preserves the original
-teleport/read semantics with latency stamps. Acquisition before startup uses
-the initial position. `freeze_at` preserves the original frame-count convention;
-read/send failures use zero-based call counts (initial read is call zero).
-`-1` disables injection. Seeds reproduce noise with the same standard-library
-implementation; `std::normal_distribution` is not bit-identical across all
-standard libraries. Recorded-input replay avoids regenerating noise.
-This is a bounded kinematic test model, not a validated drive/friction/contact
-model or evidence of sim-to-real fidelity.
+`--fast` uses a virtual clock and still runs timestamp checks. Normal execution
+uses a monotonic clock and absolute deadlines. Noise, latency and bias are
+configurable. A seed reproduces noise within the same standard-library
+implementation; recorded-input replay avoids regenerating it.
+
+For hardware, select **rail node** in Autonomous Rendezvous. RVDLAB starts the
+bridge, acquires control and uses real time. It overrides `clock_skew_s` to
+0.1, `communication_timeout_s` to 0.8 and `measurement_late_s` to 0.5. A run starts
+at the measured position; **To start** moves the rail to the configured start
+first. **rail node, z simulated** moves X/Y and simulates Z in the bridge.
+The node speed floor and feedback path are described in
+[hardware integration](hardware-integration.md#feedback-and-bridge-behavior).
 
 ## Records and replay
 
-Every run creates a new `experiments/<UTC-id>/` directory, or the exact fresh
-`--experiment-dir` path. Existing directories are refused. Files are:
+Each run creates a fresh `experiments/<UTC-id>/` directory, or the exact
+`--experiment-dir` path. Existing directories are refused.
 
-- `metadata.json`: controller/model identity, artifact SHA-256, backend, compiler,
-  build commit/dirty state, UTC creation time, seed and clock mode.
-- `configuration.ini`: resolved runtime configuration, including simulation seed.
-- `trajectory.csv`: original CSV column order and six-decimal presentation,
-  followed by the commanded reference (`rx,ry,rz`) and encoder feedback
-  (`enc_x,enc_y,enc_z,t_encoder`, empty when not reported).
-- `initial_state.csv` and `controller.csv`: full-precision initial state and
-  actual controller inputs, expected outputs, termination and safety flags.
-- `events.jsonl`: lifecycle transitions, safety interventions, faults and outcome.
-- `summary.json`: final outcome/reason, exit code, steps and interventions.
-- `checksums.sha256`: completion-time integrity of configuration, inputs and logs.
+| File | Contents |
+|---|---|
+| `metadata.json` | Model/artifact hashes, backend, compiler, build commit/dirty state, seed, clock and rail source |
+| `configuration.ini` | Resolved runtime configuration |
+| `trajectory.csv` | Original columns followed by reference `rx,ry,rz` and `enc_x,enc_y,enc_z,t_encoder` |
+| `initial_state.csv`, `controller.csv` | Full-precision initial state, controller inputs, expected outputs and flags |
+| `events.jsonl`, `summary.json` | Transitions, faults, outcome, exit code, steps and interventions |
+| `checksums.sha256` | Completion-time integrity manifest for the runtime records above |
+| `rail_node.json` | Added by RVDLAB after a node run: simulated axes/start/model and speed floors |
 
-`--log FILE` and the original `pfcr_rail_log.csv` default remain compatibility
-exports at the end of a run. For live consumers, use the experiment's
-`trajectory.csv`, which is flushed each step. `--log` may name that exact file;
-it cannot overwrite other structured files in the experiment directory.
+Bridge runs set `metadata.json` to `hardware: true`, `rail: "bridge"`, including
+runs against a simulated node or with Z simulated. Check the node profile and
+`rail_node.json` for the actual setup. The latter is outside the C++ checksum
+manifest; the runtime snapshot does not include the node's hardware profile.
+Keep the profile with the experiment's lab records.
 
-`rail_replay EXPERIMENT_DIR [MODEL_DIR]` verifies integrity, restores initial
-state, replays recorded inputs and checks actions/next states at 1e-9 with exact
-status/flags. It creates no RailIO and sends no commands. Exact replay is
-expected for the same backend/toolchain; cross-platform policy rounding may
-require investigation rather than a weakened tolerance. It does not replay
-physical dynamics, validate unrecorded sensor processing, or prove hardware
-safety. Initial-read failures have no controller inputs and cannot be replayed.
-Interrupted runs without a completion manifest are rejected. SHA-256 detects
-accidental changes; it is not a signature or an adversarial trust mechanism.
+`trajectory.csv` is flushed each step. `--log FILE` (default
+`pfcr_rail_log.csv`) exports a compatibility copy when the run ends.
+
+`rail_replay EXPERIMENT_DIR [MODEL_DIR]` verifies integrity and replays the
+recorded controller inputs, comparing actions/next states at 1e-9 and exact
+status/flags. It sends no hardware commands and does not reconstruct physical
+motion. Use the same backend/toolchain for exact replay. Initial-read failures
+have no controller inputs; incomplete runs without a manifest are rejected.
