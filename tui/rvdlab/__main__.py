@@ -36,6 +36,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true",
                         help="print the system status and exit; exit code 1 if the simulator or policy is not ready")
     parser.add_argument("--version", action="store_true", help="print versions and exit")
+    welcome = parser.add_mutually_exclusive_group()
+    welcome.add_argument("--welcome", dest="welcome", action="store_true", default=None,
+                         help="replay the first-launch welcome animation")
+    welcome.add_argument("--no-welcome", dest="welcome", action="store_false",
+                         help="skip the welcome animation for this launch")
     args = parser.parse_args(argv)
     if (sys.stdout.encoding or "").lower().replace("-", "") != "utf8":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]  # block glyphs on non-UTF-8 pipes
@@ -58,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     from .app import RvdLabApp
 
     RvdLabApp(root=args.root, configs=configs, experiments=args.experiments, profiles=args.profiles,
-              node=args.node).run()
+              node=args.node, welcome=args.welcome).run()
     return 0
 
 

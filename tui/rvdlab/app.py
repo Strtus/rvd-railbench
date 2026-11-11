@@ -11,6 +11,8 @@ from .project import load_project
 from .remote import connection_path
 from .screens import (HomeScreen, ManagerScreen, MotionScreen, OverviewScreen, RendezvousScreen, SensorsScreen,
                       SetupScreen)
+from .screens.welcome import WelcomeScreen
+from .welcome import mark_welcome_seen, welcome_needed
 
 MONOCHROME = Theme(
     name="rvd-mono",
@@ -36,12 +38,14 @@ class RvdLabApp(App):
     BINDINGS = [Binding("ctrl+q", "quit", "Quit", show=False, priority=True)]
 
     def __init__(self, root: Path | None = None, configs: list[Path] | None = None,
-                 experiments: Path | None = None, profiles: Path | None = None, node: Path | None = None) -> None:
+                 experiments: Path | None = None, profiles: Path | None = None, node: Path | None = None,
+                 welcome: bool | None = None) -> None:
         super().__init__()
         self._sources = (root, configs, experiments, profiles)
         self.project = load_project(root, configs, experiments, profiles)
         self.start_override: Vec3 | None = None
         self.node_path = connection_path(node)
+        self._welcome = welcome
 
     def reload_project(self) -> None:
         self.project = load_project(*self._sources)
@@ -69,5 +73,16 @@ class RvdLabApp(App):
             ("setup", SetupScreen()),
         ):
             self.install_screen(screen, name)
+        show_welcome = self._welcome if self._welcome is not None else not self.is_headless and welcome_needed()
+        if show_welcome:
+            self.push_screen(WelcomeScreen(), self._welcome_finished)
+        else:
+            self._open_start_screen()
+
+    def _welcome_finished(self, _result: None) -> None:
+        mark_welcome_seen()
+        self._open_start_screen()
+
+    def _open_start_screen(self) -> None:
         if self.project.rail_profile is None and not self.project.explicit_configs:
             self.push_screen("setup")  # first start: describe the rail before anything else
