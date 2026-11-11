@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rvd_railbench VERSION 0.6.0 LANGUAGES CXX)
+project(rvd_railbench VERSION 0.7.0 LANGUAGES CXX)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
