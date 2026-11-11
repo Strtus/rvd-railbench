@@ -350,16 +350,28 @@ def test_a_drive_that_drops_out_faults_and_held_axes_keep_holding(make_node):
     stream(node, axes=["x"])
 
 
-def test_a_brief_gap_in_a_drive_enabled_report_is_tolerated(make_node):
+def test_a_brief_gap_in_a_drive_enabled_report_is_tolerated(make_node, monkeypatch):
     node = make_node(profile=held_profile())
     hold_z(node)
+    # Drive both clocks explicitly: wall-clock sleeps left only 20 ms before
+    # the stream deadline, and could expire control on a busy Windows runner.
+    now = [node.clock()]
+    monkeypatch.setattr(node, "clock", lambda: now[0])
+    monkeypatch.setattr(node.backend, "_clock", lambda: now[0])
     lease = stream(node, axes=["x"], timeout_s=0.5)
     setpoint(node, lease, 1, {"x": 0.1}, 1.0)
     node.backend.dropped.update({"x", "z"})
-    time.sleep(0.03)
+    node.snapshot(fresh=True)
+    assert set(node._drop_since) == {"x", "z"}  # the missing report was actually polled
+    now[0] += 0.03
     node.backend.dropped.clear()
-    time.sleep(0.2)
-    assert node.snapshot()["fault"] is None
+    node.snapshot(fresh=True)
+    assert not node._drop_since
+    now[0] += 0.2
+    state = node.snapshot(fresh=True)
+    assert state["fault"] is None
+    assert state["control"]["armed"] is True
+    assert state["control"]["axes"] == ["x"]
     assert node.backend.armed == {"x", "z"}
 
 
