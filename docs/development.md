@@ -25,9 +25,13 @@ short simulation; it does not probe hardware. `rvdlab --version` reports the
 interface and runtime versions.
 
 The first interactive launch opens with only the Braille orbital animation.
-After one six-orbit cycle, the logo smoothly shrinks and a blinking cursor types
-the RVDLAB wordmark to its right. The compact logo and wordmark are both six rows
-high, and the comet keeps orbiting. There are no captions or key prompts.
+The outline appears over 3 seconds, followed by 2.5 seconds of full-size orbital
+motion. The comet uses Kepler's equation to move faster near the focus and slower
+far away on each stylized ellipse. The logo then shrinks over 1.6 seconds, and a
+blinking cursor types the RVDLAB wordmark to its right. The compact logo and
+wordmark are both six rows high, and the comet keeps orbiting. Braille cells
+shared by multiple orbits or the central hub stay dim so highlighting does not
+spill onto adjacent curves. There are no captions or key prompts.
 Press any ordinary key at any time to enter the normal rail setup or home screen.
 RVDLAB then records `~/.rvdlab/welcome-seen` (under `RVDLAB_HOME` when set), so later
 launches go straight to the interface. `rvdlab --welcome` replays the animation;

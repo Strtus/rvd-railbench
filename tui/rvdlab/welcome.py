@@ -1,12 +1,13 @@
 """Braille orbital welcome, ported from the supplied rvdlab_braille_anim.ps1.
 
-Preserves its logo geometry, reveal order, ANSI palette and 0.105 rad/frame
-comet motion. This is a logo animation, not a physical orbit simulation.
+Preserves its logo geometry, reveal order and ANSI palette. Comet motion uses
+Kepler's equation on each stylized ellipse (the logo has no shared focus).
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 
 from rich.text import Text
@@ -15,10 +16,13 @@ from .logo import LOGO
 from .project import user_data_dir
 
 COLS, ROWS, FPS = 108, 27, 24
-REVEAL_FRAMES = 90
-ANGLE_STEP = 0.105
-ORBIT_FRAMES = math.ceil(6 * math.tau / ANGLE_STEP)
-DURATION = (REVEAL_FRAMES + ORBIT_FRAMES) / FPS
+REVEAL_DURATION = 3.0
+REVEAL_FRAMES = round(REVEAL_DURATION * FPS)
+ORBIT_DURATION = 2.5
+DURATION = REVEAL_DURATION + ORBIT_DURATION
+MEAN_ANOMALY_STEP = 0.105
+ORBIT_AXIS_RATIO = .545
+ECCENTRICITY = math.sqrt(1 - ORBIT_AXIS_RATIO**2)
 SHRINK_DURATION = 1.6
 TYPE_START = DURATION + SHRINK_DURATION
 # Matches the public site's 2.7 s, six-letter wordmark typing sequence.
@@ -27,6 +31,53 @@ CURSOR_DURATION = 3.6
 BASE_COLOR = "#005faf"
 COLORS = ("#ffffff", "#00d7ff", "#00afff", "#0087ff", "#005fff")
 BITS = ((1, 2, 4, 64), (8, 16, 32, 128))
+
+
+def eccentric_anomaly(mean_anomaly: float) -> float:
+    """Solve E - e sin(E) = M for equal swept areas in equal times."""
+    mean_anomaly %= math.tau
+    angle = mean_anomaly
+    for _ in range(12):
+        correction = (angle - ECCENTRICITY * math.sin(angle) - mean_anomaly) / (1 - ECCENTRICITY * math.cos(angle))
+        angle -= correction
+        if abs(correction) < 1e-12:
+            break
+    return angle
+
+
+def _comet_phase(frame: int) -> tuple[int, float]:
+    travel = max(0, frame - REVEAL_FRAMES) * MEAN_ANOMALY_STEP
+    return int(travel / math.tau) % 6, travel % math.tau
+
+
+def comet_points(frame: int):
+    """Share one continuous clock across the opening, zoom and wordmark."""
+    orbit, mean_anomaly = _comet_phase(frame)
+    a = 1100.5 - 162 * orbit
+    b = a * ORBIT_AXIS_RATIO
+    # Tail samples earlier times, so its length follows the comet's speed.
+    for i in range(11, -1, -1):
+        tail_mean = mean_anomaly - i * .055
+        if tail_mean < 0:
+            continue
+        angle = eccentric_anomaly(tail_mean)
+        color = 0 if i == 0 else 1 if i < 3 else 2 if i < 6 else 3 if i < 9 else 4
+        yield 2340 - a + a * math.cos(angle), 1260 + b * math.sin(angle), color
+
+
+def _comet_cells(frame: int, cols: int, rows: int, owners: Sequence[int],
+                 project: Callable[[float, float], tuple[int, int]]) -> dict[int, int]:
+    orbit, _ = _comet_phase(frame)
+    hot = {}
+    for px, py, color in comet_points(frame):
+        x, y = project(px, py)
+        if 0 <= x < cols * 2 and 0 <= y < rows * 4:
+            index = y // 4 * cols + x // 2
+            # A terminal colors the entire Braille cell. Leave shared cells at
+            # their base color rather than lighting unrelated orbits or the hub.
+            if owners[index] == 1 << orbit:
+                hot[index] = color
+    return hot
 
 
 def welcome_needed() -> bool:
@@ -53,22 +104,24 @@ class OrbitalAnimation:
         self.scale = min((dw - 4) / 2201, (dh - 8) / 1206)
         self.ox = (dw - 2201 * self.scale) / 2
         self.oy = (dh - 1206 * self.scale) / 2
-        self.orbits = [(1100.5 - 162 * k, (1100.5 - 162 * k) * .545) for k in range(6)]
+        self.orbits = [(1100.5 - 162 * k, (1100.5 - 162 * k) * ORBIT_AXIS_RATIO) for k in range(6)]
         dots: set[tuple[int, int]] = set()
+        self.owners = [0] * (cols * rows)
 
-        def put(x: float, y: float) -> None:
+        def put(x: float, y: float, owner: int) -> None:
             dx, dy = self.map_dot(x, y)
             if 0 <= dx < dw and 0 <= dy < dh:
                 dots.add((dx, dy))
+                self.owners[dy // 4 * cols + dx // 2] |= 1 << owner
 
-        for a, b in self.orbits:
+        for owner, (a, b) in enumerate(self.orbits):
             steps = round(max(1400, a * 3))
             for i in range(steps + 1):
                 angle = math.tau * i / steps
-                put(2340 - a + a * math.cos(angle), 1260 + b * math.sin(angle))
+                put(2340 - a + a * math.cos(angle), 1260 + b * math.sin(angle), owner)
         for i in range(600):
             angle = math.tau * i / 600
-            put(2307.5 + 32.5 * math.cos(angle), 1260 + 32.5 * math.sin(angle))
+            put(2307.5 + 32.5 * math.cos(angle), 1260 + 32.5 * math.sin(angle), 6)
 
         apex_x = (2340 - 139) * self.scale + self.ox
         apex_y = (1260 - 657) * self.scale + self.oy
@@ -76,7 +129,7 @@ class OrbitalAnimation:
         maximum = max(1.0, *distances.values())
         bins: list[list[tuple[int, int]]] = [[] for _ in range(REVEAL_FRAMES)]
         for point, distance in distances.items():
-            bins[min(89, round((distance / maximum)**.92 * 89))].append(point)
+            bins[min(REVEAL_FRAMES - 1, round((distance / maximum)**.92 * (REVEAL_FRAMES - 1)))].append(point)
         masks = [0] * (cols * rows)
         self.reveal: list[tuple[tuple[int, ...], dict[int, int]]] = []
         for group in bins:
@@ -101,19 +154,7 @@ class OrbitalAnimation:
             # Keep the same reveal duration when a smaller terminal has fewer bins.
             index = min(len(self.reveal) - 1, frame * len(self.reveal) // REVEAL_FRAMES)
             return self.reveal[index]
-        travel = (frame - REVEAL_FRAMES) * ANGLE_STEP
-        orbit = int(travel / math.tau) % 6
-        angle = travel % math.tau
-        a, b = self.orbits[orbit]
-        hot = {}
-        # Tail first, head last: identical cell coloring to the PowerShell script.
-        for i in range(11, -1, -1):
-            tail_angle = angle - i * .055
-            if tail_angle < 0:
-                continue
-            x, y = self.map_dot(2340 - a + a * math.cos(tail_angle), 1260 + b * math.sin(tail_angle))
-            if 0 <= x < self.cols * 2 and 0 <= y < self.rows * 4:
-                hot[y // 4 * self.cols + x // 2] = 0 if i == 0 else 1 if i < 3 else 2 if i < 6 else 3 if i < 9 else 4
+        hot = _comet_cells(frame, self.cols, self.rows, self.owners, self.map_dot)
         return self.masks, hot
 
     def render(self, frame: int, monochrome: bool = False) -> Text:
@@ -136,7 +177,7 @@ def animation(cols: int, rows: int) -> OrbitalAnimation:
 
 
 @lru_cache(maxsize=1)
-def _outline() -> tuple[tuple[float, float], ...]:
+def _outline() -> tuple[tuple[float, float, int], ...]:
     points = []
     for k in range(6):
         a = 1100.5 - 162 * k
@@ -144,10 +185,10 @@ def _outline() -> tuple[tuple[float, float], ...]:
         steps = round(max(1400, a * 3))
         for i in range(steps + 1):
             angle = math.tau * i / steps
-            points.append((2340 - a + a * math.cos(angle), 1260 + b * math.sin(angle)))
+            points.append((2340 - a + a * math.cos(angle), 1260 + b * math.sin(angle), k))
     for i in range(600):
         angle = math.tau * i / 600
-        points.append((2307.5 + 32.5 * math.cos(angle), 1260 + 32.5 * math.sin(angle)))
+        points.append((2307.5 + 32.5 * math.cos(angle), 1260 + 32.5 * math.sin(angle), 6))
     return tuple(points)
 
 
@@ -156,13 +197,16 @@ def _project(x: float, y: float, scale: float, cx: float, cy: float) -> tuple[in
 
 
 @lru_cache(maxsize=64)
-def _projected_masks(cols: int, rows: int, scale: float, cx: float, cy: float) -> tuple[int, ...]:
+def _projected_geometry(cols: int, rows: int, scale: float, cx: float, cy: float) -> tuple[tuple[int, ...], tuple[int, ...]]:
     masks = [0] * (cols * rows)
-    for x, y in _outline():
+    owners = [0] * (cols * rows)
+    for x, y, owner in _outline():
         dx, dy = _project(x, y, scale, cx, cy)
         if 0 <= dx < cols * 2 and 0 <= dy < rows * 4:
-            masks[dy // 4 * cols + dx // 2] |= BITS[dx % 2][dy % 4]
-    return tuple(masks)
+            index = dy // 4 * cols + dx // 2
+            masks[index] |= BITS[dx % 2][dy % 4]
+            owners[index] |= 1 << owner
+    return tuple(masks), tuple(owners)
 
 
 class WelcomeAnimation:
@@ -223,18 +267,9 @@ class WelcomeAnimation:
             start_cy = self.full_y * 4 + self.full_rows * 2
             cx = start_cx + (self.target_cx - start_cx) * eased
             cy = start_cy + (self.target_cy - start_cy) * eased
-            masks = _projected_masks(self.cols, self.rows, scale, cx, cy)
-            travel = (frame - REVEAL_FRAMES) * ANGLE_STEP
-            orbit = int(travel / math.tau) % 6
-            angle = travel % math.tau
-            a, b = full.orbits[orbit]
-            for i in range(11, -1, -1):
-                tail_angle = angle - i * .055
-                if tail_angle < 0:
-                    continue
-                x, y = _project(2340 - a + a * math.cos(tail_angle), 1260 + b * math.sin(tail_angle), scale, cx, cy)
-                if 0 <= x < self.cols * 2 and 0 <= y < self.rows * 4:
-                    hot[y // 4 * self.cols + x // 2] = 0 if i == 0 else 1 if i < 3 else 2 if i < 6 else 3 if i < 9 else 4
+            masks, owners = _projected_geometry(self.cols, self.rows, scale, cx, cy)
+            hot = _comet_cells(frame, self.cols, self.rows, owners,
+                               lambda x, y: _project(x, y, scale, cx, cy))
         chars = [chr(0x2800 + mask) if mask else " " for mask in masks]
         if monochrome:
             for index, color in hot.items():
