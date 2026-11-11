@@ -116,6 +116,7 @@ class RendezvousScreen(Page):
         self.cancel_move: threading.Event | None = None
         self.process: asyncio.subprocess.Process | None = None
         self.running = False
+        self.hardware_run = False
         self.stop_requested = False
         self.series = Series()
         self.comparison = Comparison()
@@ -322,7 +323,8 @@ class RendezvousScreen(Page):
     def arm_node(self, steps: int, simulated: tuple[str, ...] = ()) -> None:
         try:
             bridge = Bridge(connect(self.lab.node_path),  # type: ignore[arg-type]
-                            log=lambda m: self.app.call_from_thread(self.log_line, m), simulated=simulated)
+                            log=lambda m: self.app.call_from_thread(self.log_line, m), simulated=simulated,
+                            on_fault=lambda: self.app.call_from_thread(self.mark_control_fault))
             bridge.acquire()
         except Exception as error:
             self.app.call_from_thread(self.fail, f"cannot take control of the rail: {error}")
@@ -381,6 +383,8 @@ class RendezvousScreen(Page):
         self.query_one("#comparison-event", Select).set_options([])
         self.query_one("#comparison-status", Static).update("Comparison available after run")
         self.running = True
+        self.hardware_run = self.bridge is not None
+        self.lab.set_rail_control_state("running" if self.hardware_run else "idle")
         self.stop_requested = False
         self.series = Series()
         self.last_row = None
@@ -420,14 +424,21 @@ class RendezvousScreen(Page):
             async for raw in self.process.stdout:
                 log.write(raw.decode("utf-8", "replace").rstrip())
             code = await self.process.wait()
+            if code not in (0, 1) and not self.stop_requested:
+                self.mark_control_fault()
         except OSError as error:
             log.write(f"cannot start rail_main: {error}")
+            self.mark_control_fault()
         except asyncio.CancelledError:
             if self.process is not None and self.process.returncode is None:
                 self.process.terminate()
+            if not self.stop_requested:
+                self.mark_control_fault()
             raise
         finally:
             timer.stop()
+            # Consume a terminal fault before waiting for bridge cleanup.
+            self.consume(tail.poll())
             override.unlink(missing_ok=True)
             self.process = None
             if self.bridge is not None:
@@ -435,8 +446,11 @@ class RendezvousScreen(Page):
                 await asyncio.to_thread(bridge.close)
                 if directory.is_dir():
                     (directory / "rail_node.json").write_text(json.dumps(bridge.describe(), indent=1) + "\n")
-        self.consume(tail.poll())
         self.finish(directory, code)
+
+    def mark_control_fault(self) -> None:
+        if self.hardware_run:
+            self.lab.set_rail_control_state("fault")
 
     def consume(self, rows: list[dict[str, str]]) -> None:
         if not rows:
@@ -444,6 +458,15 @@ class RendezvousScreen(Page):
         self.series.extend(rows)
         self.interventions += sum(1 for r in rows if r.get("intervened") == "1")
         self.last_row = rows[-1]
+        if self.hardware_run and self.running:
+            for row in rows:
+                reason = row.get("reason")
+                expected_stop = self.stop_requested and reason == "STOP_REQUESTED"
+                if row.get("status") in ("ABORT", "FAULT") and reason != "MAX_STEPS" and not expected_stop:
+                    self.mark_control_fault()
+            if self.lab.rail_control_state != "fault" and self.last_row.get("status") == "RUN":
+                self.lab.set_rail_control_state(
+                    "intervening" if self.last_row.get("intervened") == "1" else "running")
         self.refresh_plots()
         self.render_status()
 
@@ -459,6 +482,13 @@ class RendezvousScreen(Page):
             self.outcome = ("NOT STARTED", "")
         else:
             self.outcome = ("INCOMPLETE", f"exit code {code}")
+        if self.hardware_run:
+            expected_stop = self.stop_requested and record is not None and record.reason == "STOP_REQUESTED"
+            if ((record is not None and record.outcome == "FAULT" and not expected_stop)
+                    or self.outcome[0] not in ("DOCKED", "LIMIT_REACHED", "INTERRUPTED")):
+                self.mark_control_fault()
+            if self.lab.rail_control_state != "fault":
+                self.lab.set_rail_control_state("idle")
         self.running = False
         self.set_controls(False)
         self.render_status()

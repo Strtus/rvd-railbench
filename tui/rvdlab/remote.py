@@ -119,9 +119,11 @@ class Bridge:
 
     Axes named in simulated stay where they are on the rail; the bridge integrates them itself instead."""
 
-    def __init__(self, node: Any, log: Callable[[str], None] = lambda _: None, simulated: tuple[str, ...] = ()) -> None:
+    def __init__(self, node: Any, log: Callable[[str], None] = lambda _: None, simulated: tuple[str, ...] = (),
+                 on_fault: Callable[[], None] = lambda: None) -> None:
         self.node = node
         self.log = log
+        self.on_fault = on_fault
         self.simulated = tuple(a for a in AXES if a in simulated)
         self.real = tuple(a for a in AXES if a not in simulated)
         self.sim: dict[str, SimAxis] = {}
@@ -164,6 +166,7 @@ class Bridge:
             self.node.stop()
         except Exception as exc:  # the node may be unreachable; rail_main still stops on its next exchange
             self.log(f"stop request failed: {exc}")
+            self.on_fault()
 
     def close(self) -> None:
         self.stop_event.set()
@@ -182,6 +185,7 @@ class Bridge:
                     self.node.release()
                 except Exception as exc:
                     self.log(f"release failed, the node lease will expire: {exc}")
+                    self.on_fault()
 
     def _serve(self) -> None:
         try:
@@ -213,6 +217,7 @@ class Bridge:
                 return "OK"
             return "ERR unknown request"
         except Exception as exc:
+            self.on_fault()
             return f"ERR {exc}".replace("\n", " ")
 
     def _read(self) -> str:
@@ -222,8 +227,11 @@ class Bridge:
         state = self.node.state(fresh=True)
         encoders = state["sensors"]["encoders"]
         if not encoders["ok"] or encoders["sample_time"] is None:
+            self.on_fault()
             return f"ERR encoders: {encoders['error']}"
         stop = self.stop_event.is_set() or state["control"] is None or bool(state["fault"])
+        if state["fault"] or (stop and not self.stop_event.is_set()):
+            self.on_fault()
         if stop and not self.stop_event.is_set():
             self.log(f"the node ended control: {state['fault'] or state['reason']}")
         age = state["server_time"] - encoders["sample_time"] + rtt / 2

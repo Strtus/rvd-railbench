@@ -20,13 +20,18 @@ from rvd_railnode.sim import SimBackend  # noqa: E402
 
 from rvdlab.app import RvdLabApp  # noqa: E402
 from rvdlab.project import find_build  # noqa: E402
-from rvdlab.remote import SPEED_FLOOR, Bridge, SimAxis, connect, connection_path, move, remote_override  # noqa: E402
+from rvdlab.remote import (  # noqa: E402
+    REMOTE_TIMING, SPEED_FLOOR, Bridge, SimAxis, connect, connection_path, move, remote_override,
+)
 
 START = (18.0, 0.03, -0.02)
 
 
 @pytest.fixture
-def node(tmp_path: Path):
+def node(tmp_path: Path, monkeypatch):
+    # These integration tests exercise the UI and node, not real-time scheduling.
+    # The C++ safety_time_test covers the production timestamp uncertainty bound.
+    monkeypatch.setitem(REMOTE_TIMING, "clock_skew_s", 0.5)
     profile = copy.deepcopy(SIMULATOR)
     for axis, value in zip("xyz", START):
         profile["axes"][axis]["start"] = value
@@ -260,10 +265,14 @@ async def test_a_run_on_the_node_ends_with_the_rail_released(node, tmp_path, pro
         screen.query_one("#target", Select).value = "node"
         screen.query_one("#max-steps", Input).value = "2"
         await pilot.press("f5")
+        await settle(pilot, lambda: type(app.screen).__name__ == "ConfirmModal")
+        assert not app.has_class("rail-control-active")
         await confirm(pilot, app)
+        await settle(pilot, lambda: app.has_class("rail-control-active"))
         await settle(pilot, lambda: screen.outcome is not None, 60)
         assert screen.outcome[0] == "LIMIT_REACHED", screen.outcome
         assert rail.snapshot()["control"] is None and screen.bridge is None
+        assert not app.has_class("rail-control-active")
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
@@ -279,10 +288,80 @@ async def test_a_run_with_z_simulated_leaves_the_rail_z_alone(node, tmp_path, pr
         assert "z simulated" in str(screen.query_one("#run-context", Static).render())
         await pilot.press("f5")
         await confirm(pilot, app)
+        await settle(pilot, lambda: app.has_class("rail-control-active"))
         await settle(pilot, lambda: screen.outcome is not None, 60)
         assert screen.outcome[0] == "LIMIT_REACHED", screen.outcome
+        assert not app.has_class("rail-control-active")
         state = rail.snapshot()
         assert state["control"] is None and state["position"]["z"] == pytest.approx(START[2])
         assert state["position"]["x"] != pytest.approx(START[0], abs=1e-6)
         note = json.loads(next((tmp_path / "experiments").glob("*/rail_node.json")).read_text())
         assert note["simulated_axes"] == ["z"] and set(note["speed_floor_m_s"]) == {"x", "y"}
+
+
+@pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
+async def test_stopping_a_node_run_clears_the_control_border(node, tmp_path, profiles):
+    connection, rail = node
+    app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)
+    async with app.run_test(size=(140, 60)) as pilot:
+        await pilot.press("3", "enter")
+        screen = app.screen
+        screen.query_one("#target", Select).value = "node"
+        screen.query_one("#max-steps", Input).value = "100"
+        await pilot.press("f5")
+        await confirm(pilot, app)
+        await settle(pilot, lambda: app.has_class("rail-control-active") and screen.process is not None)
+        await pilot.press("f6")
+        await settle(pilot, lambda: screen.outcome is not None)
+        assert screen.outcome[0] == "INTERRUPTED"
+        assert rail.snapshot()["control"] is None and screen.bridge is None
+        assert not app.has_class("rail-control-active")
+
+
+@pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
+async def test_node_fault_keeps_flashing_after_model_exit(node, tmp_path, profiles, monkeypatch):
+    connection, rail = node
+    start = Bridge.start
+
+    def start_without_feedback(bridge):
+        # The lease is already acquired. Fail the model's first read instead of
+        # racing its startup and safety deadlines while waiting for a UI frame.
+        rail.backend.fail_reads = 10**6
+        start(bridge)
+
+    monkeypatch.setattr(Bridge, "start", start_without_feedback)
+    app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)
+    async with app.run_test(size=(140, 60)) as pilot:
+        await pilot.press("3", "enter")
+        screen = app.screen
+        screen.query_one("#target", Select).value = "node"
+        screen.query_one("#max-steps", Input).value = "100"
+        await pilot.press("f5")
+        await confirm(pilot, app)
+        await settle(pilot, lambda: app.rail_control_state == "fault")
+        await settle(pilot, lambda: screen.outcome is not None)
+        assert screen.outcome == ("FAULT", "READ_FAILED"), screen.outcome
+        assert screen.bridge is None and rail.snapshot()["control"] is None
+        assert app.rail_control_state == "fault"
+
+
+def test_bridge_reports_stop_and_release_failures(node, monkeypatch):
+    connection, rail = node
+    faults = []
+    bridge = Bridge(connect(connection), on_fault=lambda: faults.append("fault"))
+    bridge.acquire()
+
+    def disconnected():
+        raise OSError("connection lost")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(bridge.node, "stop", disconnected)
+            bridge.stop()
+            assert faults == ["fault"]
+            patch.setattr(bridge.node, "release", disconnected)
+            bridge.close()
+            assert faults == ["fault", "fault"]
+    finally:
+        bridge.close()
+    assert rail.snapshot()["control"] is None
