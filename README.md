@@ -1,6 +1,7 @@
 # Open-source infrastructure for spacecraft rendezvous and docking experiments.
-
-![RVDLAB](docs/images/rvdlab-logo.png)
+<p align="center">
+  <img src="docs/images/rvdlab-logo.png" width="600" alt="RVDLAB">
+</p>
 
 [Website](https://rvdlab.strtus.uk) · [Documentation](docs) · [Issues](https://github.com/Strtus/rvd-railbench/issues)
 
