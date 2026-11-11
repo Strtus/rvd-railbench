@@ -12,6 +12,23 @@ Screen {
     color: #d6d6d6;
 }
 
+/* Hardware model runs: fixed width, steady normal/CBF colors, flashing faults. */
+.rail-control-active Screen {
+    border: thick #3ddc84;
+}
+
+.rail-control-intervening Screen {
+    border: thick #ffbf3b;
+}
+
+.rail-control-fault Screen {
+    border: thick #651c24;
+}
+
+.rail-control-fault.rail-control-bright Screen {
+    border: thick #ff3b30;
+}
+
 /* splash */
 
 HomeScreen {

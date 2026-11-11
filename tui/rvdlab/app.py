@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from textual.app import App
 from textual.binding import Binding
 from textual.theme import Theme
+from textual.timer import Timer
 
 from .config import Vec3
 from .project import load_project
@@ -30,6 +32,8 @@ MONOCHROME = Theme(
     dark=True,
 )
 
+RailControlState = Literal["idle", "running", "intervening", "fault"]
+
 
 class RvdLabApp(App):
     CSS_PATH = "rvdlab.tcss"
@@ -46,6 +50,27 @@ class RvdLabApp(App):
         self.start_override: Vec3 | None = None
         self.node_path = connection_path(node)
         self._welcome = welcome
+        self.rail_control_state: RailControlState = "idle"
+        self._rail_control_timer: Timer | None = None
+
+    def set_rail_control_state(self, state: RailControlState) -> None:
+        """Show steady running/CBF colors; only faults pulse, on every screen."""
+        if state == self.rail_control_state:
+            return
+        if self._rail_control_timer is not None:
+            self._rail_control_timer.stop()
+            self._rail_control_timer = None
+        self.rail_control_state = state
+        self.set_class(state != "idle", "rail-control-active", update=False)
+        self.set_class(state == "intervening", "rail-control-intervening", update=False)
+        self.set_class(state == "fault", "rail-control-fault", "rail-control-bright", update=False)
+        self.update_node_styles(animate=False)
+        if state == "fault":
+            self._rail_control_timer = self.set_interval(0.5, self._pulse_rail_control)
+
+    def _pulse_rail_control(self) -> None:
+        if self._rail_control_timer is not None:
+            self.toggle_class("rail-control-bright")
 
     def reload_project(self) -> None:
         self.project = load_project(*self._sources)
@@ -64,6 +89,9 @@ class RvdLabApp(App):
     def on_mount(self) -> None:
         self.register_theme(MONOCHROME)
         self.theme = MONOCHROME.name
+        # Cached screens also need the current warning styles when popped back into view.
+        self.screen_change_signal.subscribe(
+            self, lambda screen: screen.update_node_styles(animate=False), immediate=True)
         for name, screen in (
             ("overview", OverviewScreen()),
             ("motion", MotionScreen()),

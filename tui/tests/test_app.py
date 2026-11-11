@@ -125,7 +125,9 @@ async def test_rendezvous_runs_a_bounded_simulation(tmp_path, profiles):
         screen.query_one("#max-steps", Input).value = "12"
         screen.query_one("#clock", Select).value = "fast"
         screen.start()
+        assert not app.has_class("rail-control-active")
         await wait_for(pilot, lambda: screen.outcome is not None)
+        assert not app.has_class("rail-control-active")
         assert screen.outcome == ("LIMIT_REACHED", "MAX_STEPS")
         assert len(screen.series.x) == 13
         assert json.loads((screen.experiment / "summary.json").read_text())["reason"] == "MAX_STEPS"
@@ -143,6 +145,7 @@ async def test_fault_injection_trips_the_safety_supervisor(tmp_path, profiles):
         screen.query_one("#fault", Select).value = "send"
         screen.query_one("#fault-step", Input).value = "5"
         screen.start()
+        assert not app.has_class("rail-control-active")
         await wait_for(pilot, lambda: screen.outcome is not None)
         assert screen.outcome == ("FAULT", "SEND_FAILED")
 

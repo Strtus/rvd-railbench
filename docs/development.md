@@ -40,6 +40,16 @@ use smaller matching-height artwork. Use a font with Unicode Braille support, su
 Cascadia Mono. The animation is drawn by the Python interface on every platform
 and does not require PowerShell.
 
+While a model run controls the rail node, a thick border surrounds the terminal:
+steady green for normal control, steady yellow while the latest telemetry step
+reports CBF intervention, and flashing red for a runtime or bridge fault. Red
+alternates bright and dark every half second and stays visible after a failed
+run until the next run starts. CBF release returns the border to green; normal
+docking, the step limit and operator stop clear it after bridge cleanup. The
+border follows page and dialog changes. Both rail-node modes (including simulated
+Z) use this cue; local simulations, offline comparisons and manual moves do not
+trigger it.
+
 `install.sh` and `install.ps1` offer release-archive installation with SHA-256
 checks and a source-build fallback. They currently install only `tui/` into
 their environment; node access also needs `node/` installed there. The combined
@@ -67,6 +77,23 @@ then build and run CTest in that directory.
 Despite its name, `RVD_SIMULATION_ONLY=ON` does **not** disable `--bridge`:
 hardware runs use the Python node through that bridge. `RVD_WINDOWS_TIMER`
 controls winmm use.
+
+### Preview control status in the TUI
+
+After building and installing the source checkout, run:
+
+```sh
+python tools/preview_control_states.py
+```
+
+The terminal opens directly on a local simulation and starts after two seconds.
+It runs PFCR from Hill `(18, 0.3, -0.2)` m with seed 12345 and a one-second clock:
+normal control is green, CBF first intervenes at step 11 and turns the border
+yellow, and an injected send failure at step 30 leaves a flashing red border.
+F5 replays, F6 stops, and Escape exits. The launcher enables the border for this
+demo only, ignores saved node connections, and records `hardware: false`.
+Records go to `out/control-status-demo/`. Add `--check` to verify the same
+scenario headlessly at full speed.
 
 ## Architecture
 
