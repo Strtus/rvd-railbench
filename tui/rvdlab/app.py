@@ -46,6 +46,14 @@ class RvdLabApp(App):
     def reload_project(self) -> None:
         self.project = load_project(*self._sources)
 
+    def export_screenshot(self, *, title: str | None = None, simplify: bool = False) -> str:
+        svg = super().export_screenshot(title=title, simplify=simplify)
+        # Apply the font to text nodes as well as groups, including symbol-led labels.
+        # The terminal itself uses the font selected in the user's terminal emulator.
+        fonts = ('text { font-family: "Cascadia Mono", "DejaVu Sans Mono", '
+                 '"Lucida Console", "Segoe UI Symbol", monospace; }')
+        return svg.replace("</style>", fonts + "\n</style>", 1)
+
     def get_default_screen(self) -> HomeScreen:
         return HomeScreen()
 

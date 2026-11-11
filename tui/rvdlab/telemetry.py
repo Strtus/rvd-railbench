@@ -88,6 +88,7 @@ class Series:
     z: list[float] = field(default_factory=list)
     distance: list[float] = field(default_factory=list)
     speed: list[float] = field(default_factory=list)
+    intervened: list[bool] = field(default_factory=list)
 
     def extend(self, rows: list[dict[str, str]]) -> None:
         for row in rows:
@@ -99,6 +100,7 @@ class Series:
             self.z.append(h[2])  # type: ignore[arg-type]
             self.distance.append(math.sqrt(sum(v * v for v in h)))  # type: ignore[operator]
             self.speed.append(norm3(row, "hvx", "hvy", "hvz") or 0.0)
+            self.intervened.append(row.get("intervened") == "1")
 
 
 @dataclass

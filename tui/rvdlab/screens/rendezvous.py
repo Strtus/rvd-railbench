@@ -17,8 +17,9 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Input, RichLog, Select, Sparkline, Static
 
 from ..config import Vec3, envelope_violations, hill_to_rail, rail_to_hill, simulation_override
+from ..comparison import Comparison, coordinates
 from ..experiments import new_experiment_dir, read_experiment, simulation_command
-from ..plot import PlotView
+from ..plot import FILTERED, HIGHLIGHT, NOMINAL, RAW, TRACE, PlotView, Trace
 from ..project import ProjectError
 from ..remote import AXES, Bridge, connect, move, remote_override
 from ..telemetry import CsvTail, Series, norm3, num
@@ -77,13 +78,36 @@ class RendezvousScreen(Page):
                     yield Button("Stop", id="stop", compact=True, disabled=True)
                     yield Button("To start", id="to-start", compact=True, disabled=True)
                 yield Static(id="run-status")
+                yield Static("Comparison available after run", id="comparison-status")
                 yield Static("distance [m]", classes="spark-label", id="label-distance")
                 yield Sparkline([], id="spark-distance")
                 yield Static("speed [m/s]", classes="spark-label", id="label-speed")
                 yield Sparkline([], id="spark-speed")
             with Vertical(id="plots"):
-                yield PlotView("Top view  ·  x–y", id="plot-xy", invert_x=True, x_name="x [m]", y_name="y")
-                yield PlotView("Side view  ·  x–z", id="plot-xz", invert_x=True, x_name="x [m]", y_name="z")
+                with Horizontal(id="plot-legend-row"):
+                    with Vertical(id="global-legend"):
+                        yield Static("FULL TRAJECTORY", classes="plot-section-title")
+                        yield Static("● Current     ◎ Target     ○ Selected", classes="plot-note")
+                    with Vertical(id="detail-legend"):
+                        with Horizontal(id="event-controls"):
+                            yield Static("LOCAL DETAIL", classes="plot-section-title", id="local-title")
+                            yield Select([], id="comparison-event", prompt="after run", compact=True)
+                        yield Static("8 s prediction · commands held · ○ start", id="local-note")
+                for plane, axis in (("xy", "y"), ("xz", "z")):
+                    with Horizontal(classes="comparison-row"):
+                        yield PlotView(f"Full path · x–{axis}", id=f"plot-{plane}", classes="global-plot",
+                                       invert_x=True, x_name="x [m]", y_name=axis)
+                        yield PlotView(f"Local · x–{axis}", id=f"local-{plane}", classes="local-plot",
+                                       invert_x=True, x_name="x [m]", y_name=axis)
+                with Horizontal(classes="chart-legend-row"):
+                    legend = Text("─ Actual    ", style=TRACE)
+                    legend.append("× CBF    ", style=HIGHLIGHT)
+                    legend.append("┄ No CBF (sim)", style=NOMINAL)
+                    yield Static(legend, classes="global-chart-legend")
+                    local_legend = Text("─ Actual    ", style=TRACE)
+                    local_legend.append("─ Raw    ", style=RAW)
+                    local_legend.append("─ Filtered", style=FILTERED)
+                    yield Static(local_legend, classes="local-chart-legend")
         yield RichLog(id="run-log", max_lines=400, min_width=20, wrap=True)
         yield Footer()
 
@@ -94,6 +118,8 @@ class RendezvousScreen(Page):
         self.running = False
         self.stop_requested = False
         self.series = Series()
+        self.comparison = Comparison()
+        self.comparison_busy = False
         self.last_row: dict[str, str] | None = None
         self.interventions = 0
         self.experiment: Path | None = None
@@ -349,6 +375,11 @@ class RendezvousScreen(Page):
         self.app.call_from_thread(self.log_line, f"move to start {status}")
 
     def reset(self, directory: Path) -> None:
+        self.workers.cancel_group(self, "comparison")
+        self.comparison = Comparison()
+        self.comparison_busy = False
+        self.query_one("#comparison-event", Select).set_options([])
+        self.query_one("#comparison-status", Static).update("Comparison available after run")
         self.running = True
         self.stop_requested = False
         self.series = Series()
@@ -432,12 +463,88 @@ class RendezvousScreen(Page):
         self.set_controls(False)
         self.render_status()
         self.notify(" ".join(self.outcome).strip(), title="Run finished")
+        if self.series.x and (directory / "configuration.ini").is_file():
+            self.comparison_busy = True
+            self.prepare_comparison(directory, self.project.policy.directory)
+
+    @work(exclusive=True, group="comparison")
+    async def prepare_comparison(self, directory: Path, model: Path) -> None:
+        process = None
+        status = self.query_one("#comparison-status", Static)
+        status.update("Computing offline comparison ...")
+        try:
+            replay = self.project.build.rail_replay
+            if replay is None:
+                raise RuntimeError("rail_replay is not built")
+            parent = directory.parent / "comparisons"
+            parent.mkdir(exist_ok=True)
+            output = parent / directory.name
+            process = await asyncio.create_subprocess_exec(
+                str(replay), "--preview", str(directory), str(model), str(output),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+            if process.returncode:
+                raise RuntimeError(stdout.decode("utf-8", "replace").strip())
+            comparison = Comparison.load(output, directory)
+            if self.experiment != directory:
+                return
+            self.comparison = comparison
+            select = self.query_one("#comparison-event", Select)
+            select.set_options([(f"k = {k}", k) for k in comparison.events])
+            event = comparison.strongest_event()
+            if event is not None:
+                select.value = event
+            last = comparison.nominal[-1]
+            outcome = last['status'].replace('_', ' ').lower()
+            status.update(f"No CBF: {outcome} · k={last['k']}\nModel only · no rail/noise")
+            self.refresh_plots()
+        except (OSError, ValueError, KeyError, RuntimeError, asyncio.TimeoutError) as error:
+            if self.experiment == directory:
+                status.update(f"Comparison unavailable: {error}")
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            if self.experiment == directory:
+                self.comparison_busy = False
+
+    @on(Select.Changed, "#comparison-event")
+    def comparison_event_changed(self) -> None:
+        if hasattr(self, "series"):
+            self.refresh_plots()
+
+    def refresh_local_plots(self) -> None:
+        event = self.query_one("#comparison-event", Select).value
+        comparison = getattr(self, "comparison", Comparison())
+        rows = comparison.events.get(event, [])
+        actual = [r for r in comparison.actual if rows and int(event) <= int(r["k"]) <= int(event) + 8]
+        for plane, axis in (("xy", "y"), ("xz", "z")):
+            overlays = []
+            if rows:
+                for prefix, style in (("raw", RAW), ("filtered", FILTERED)):
+                    xs, ys = coordinates(rows, f"{prefix}_x", f"{prefix}_{axis}")
+                    overlays.append(Trace(xs, ys, style))
+            xs, ys = coordinates(actual, "hx", f"h{axis}")
+            markers = [(xs[0], ys[0], "○")] if xs else []
+            self.query_one(f"#local-{plane}", PlotView).plot(xs, ys, markers, overlays=overlays)
 
     def refresh_plots(self) -> None:
         s = self.series
         if s.x:
-            self.query_one("#plot-xy", PlotView).plot(s.x, s.y, [(0.0, 0.0, "◎"), (s.x[-1], s.y[-1], "●")])
-            self.query_one("#plot-xz", PlotView).plot(s.x, s.z, [(0.0, 0.0, "◎"), (s.x[-1], s.z[-1], "●")])
+            for name, values in (("xy", s.y), ("xz", s.z)):
+                highlights = [(x, y) for x, y, active in zip(s.x, values, s.intervened) if active]
+                nx, ny = coordinates(self.comparison.nominal, "hx", "hy" if name == "xy" else "hz")
+                overlays = [Trace(nx, ny, NOMINAL, dashed=True)] if nx else []
+                markers = [(0.0, 0.0, "◎")]
+                event = self.query_one("#comparison-event", Select).value
+                selected = self.comparison.events.get(event, [])
+                if selected:
+                    axis = "y" if name == "xy" else "z"
+                    markers.append((float(selected[0]["raw_x"]), float(selected[0][f"raw_{axis}"]), "○"))
+                markers.append((s.x[-1], values[-1], "●"))
+                self.query_one(f"#plot-{name}", PlotView).plot(
+                    s.x, values, markers,
+                    highlights=highlights, overlays=overlays)
         else:
             self.query_one("#plot-xy", PlotView).plot([], [])
             self.query_one("#plot-xz", PlotView).plot([], [])
@@ -445,6 +552,11 @@ class RendezvousScreen(Page):
         self.query_one("#spark-speed", Sparkline).data = list(s.speed)
         self.query_one("#label-distance", Static).update(f"distance [m]   {_range(s.distance)}")
         self.query_one("#label-speed", Static).update(f"speed [m/s]   {_range(s.speed)}")
+        self.refresh_local_plots()
+        plots = list(self.query("#plots PlotView"))
+        label_width = max(plot.axis_label_width for plot in plots)
+        for plot in plots:
+            plot.align_axis_labels(label_width)
 
     def render_status(self) -> None:
         row = self.last_row

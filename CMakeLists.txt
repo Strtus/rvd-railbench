@@ -51,6 +51,7 @@ add_library(rvd_runtime
   src/runtime/runtime.cpp
   src/runtime/experiment.cpp
   src/runtime/replay.cpp
+  src/runtime/preview.cpp
   src/runtime/safety.cpp
   src/runtime/config.cpp
   src/runtime/options.cpp

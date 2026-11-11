@@ -258,7 +258,84 @@ Footer {
 }
 
 #plots PlotView {
+    margin-bottom: 0;
+}
+
+#comparison-status, #local-note, .plot-note, .plot-section-title {
+    height: auto;
+}
+
+#comparison-status, #local-note, .plot-note {
+    color: #8a8a8a;
+}
+
+.plot-section-title {
+    color: #d0d0d0;
+    text-style: bold;
+}
+
+#plot-legend-row {
+    height: auto;
     margin-bottom: 1;
+}
+
+#global-legend {
+    width: 3fr;
+    height: auto;
+}
+
+#detail-legend {
+    width: 2fr;
+    height: auto;
+    margin-left: 3;
+}
+
+.comparison-row {
+    height: 1fr;
+    margin-bottom: 1;
+}
+
+.global-plot {
+    width: 3fr;
+}
+
+#plots .local-plot {
+    width: 2fr;
+    margin: 0 0 0 3;
+}
+
+.chart-legend-row {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.global-chart-legend {
+    width: 3fr;
+    height: auto;
+    padding-left: 8;
+}
+
+.local-chart-legend {
+    width: 2fr;
+    height: auto;
+    margin-left: 3;
+    padding-left: 8;
+}
+
+#comparison-status {
+    margin-top: 1;
+}
+
+#event-controls {
+    height: auto;
+}
+
+#comparison-event {
+    width: 1fr;
+}
+
+#local-title {
+    width: 14;
 }
 
 #run-status {
