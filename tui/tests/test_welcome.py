@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,10 @@ from conftest import ROOT
 from rvdlab.__main__ import main
 from rvdlab.app import RvdLabApp
 from rvdlab.screens.welcome import OrbitalArt, WelcomeScreen
-from rvdlab.welcome import (CURSOR_DURATION, DURATION, LETTER_TIMES, TYPE_START, OrbitalAnimation,
-                           WelcomeAnimation, mark_welcome_seen, welcome_needed)
+from rvdlab.welcome import (CURSOR_DURATION, DURATION, ECCENTRICITY, FPS, LETTER_TIMES,
+                           ORBIT_DURATION, REVEAL_DURATION, REVEAL_FRAMES, TYPE_START, OrbitalAnimation,
+                           WelcomeAnimation, _projected_geometry, eccentric_anomaly,
+                           mark_welcome_seen, welcome_needed)
 
 
 @pytest.fixture(autouse=True)
@@ -20,14 +23,73 @@ def welcome_home(tmp_path, monkeypatch):
     return directory
 
 
-def test_frames_match_recorded_powershell_output():
+def test_complete_outline_preserves_recorded_powershell_geometry():
     reference = json.loads((Path(__file__).parent / "fixtures" / "welcome_frames.json").read_text(encoding="utf-8"))
     animation = OrbitalAnimation()
-    for frame in reference["frames"]:
-        text = animation.render(frame["index"])
-        assert hashlib.sha256(text.plain.encode("utf-8")).hexdigest() == frame["text_sha256"]
-        _, hot = animation.cells(frame["index"])
-        assert {str(k): v for k, v in hot.items()} == frame["hot"]
+    frame = next(frame for frame in reference["frames"] if frame["index"] == 90)
+    text = animation.render(REVEAL_FRAMES)
+    assert hashlib.sha256(text.plain.encode("utf-8")).hexdigest() == frame["text_sha256"]
+
+
+def test_reveal_then_two_and_a_half_seconds_before_shrink():
+    assert REVEAL_DURATION == 3.0
+    assert REVEAL_FRAMES == 3 * FPS
+    assert ORBIT_DURATION == 2.5
+    assert DURATION == 5.5
+    scene = WelcomeAnimation(120, 40)
+    complete = scene.render(REVEAL_DURATION).plain
+    assert scene.render(DURATION - 1 / FPS).plain == complete
+    assert scene.render(DURATION).plain == complete
+    assert scene.render(DURATION + .8).plain != complete
+
+
+def test_kepler_motion_sweeps_equal_areas_and_speeds_up_near_focus():
+    def points(start):
+        angles = [eccentric_anomaly(start + .2 * i / 1000) for i in range(1001)]
+        return [(math.cos(angle) - ECCENTRICITY, .545 * math.sin(angle)) for angle in angles]
+
+    near, far = points(0), points(math.pi)
+
+    def area(points):
+        return sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(points, points[1:])) / 2
+
+    assert area(near) == pytest.approx(area(far), rel=1e-5)
+    near_speed = math.dist(near[0], near[1])
+    far_speed = math.dist(far[0], far[1])
+    assert near_speed > 5 * far_speed
+
+
+@pytest.mark.parametrize("size", [(108, 27), (76, 18), (40, 10)])
+def test_comet_does_not_light_cells_shared_with_other_orbits(size):
+    animation = OrbitalAnimation(*size)
+    assert any(owner.bit_count() > 1 for owner in animation.owners)
+    lit = set()
+    for frame in range(REVEAL_FRAMES, REVEAL_FRAMES + 360):
+        masks, hot = animation.cells(frame)
+        assert masks == animation.masks  # shared outlines must not disappear
+        for index in hot:
+            assert animation.owners[index].bit_count() == 1
+            assert animation.owners[index] != 1 << 6  # central hub stays dim
+        lit.update(hot)
+    assert lit
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24), (40, 12)])
+def test_compact_logo_keeps_shared_cells_dim_through_whole_cycle(size):
+    scene = WelcomeAnimation(*size)
+    _, owners = _projected_geometry(*size, scene.target_scale, scene.target_cx, scene.target_cy)
+    lit = set()
+    for step in range(360):
+        text = scene.render(TYPE_START + CURSOR_DURATION + step / FPS)
+        for span in text.spans:
+            row, col = divmod(span.start, size[0] + 1)
+            if col >= scene.title_x:
+                continue  # white wordmark
+            index = row * size[0] + col
+            assert owners[index].bit_count() == 1
+            assert owners[index] != 1 << 6
+            lit.add(index)
+    assert lit
 
 
 @pytest.mark.parametrize("size", [(76, 18), (40, 10), (16, 4)])
@@ -109,7 +171,7 @@ async def test_transform_keeps_playing_until_key_and_survives_resize(tmp_path, p
 
 def test_opening_has_only_braille_and_no_captions():
     scene = WelcomeAnimation(120, 40)
-    for time in (0, 1.5, 7.0, DURATION - .01, TYPE_START - .01):
+    for time in (0, 1.5, REVEAL_DURATION, DURATION - .01, TYPE_START - .01):
         text = scene.render(time).plain
         assert all(c in " \n" or 0x2800 <= ord(c) <= 0x28ff for c in text)
 
