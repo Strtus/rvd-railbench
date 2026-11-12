@@ -3,7 +3,7 @@
   <img src="docs/images/rvdlab-logo.png" width="400" alt="RVDLAB">
 </p>
 
-[Website](https://rvdlab.strtus.uk) · [Documentation](docs) · [Issues](https://github.com/Strtus/rvd-railbench/issues)
+[Website](https://rvdlab.strtus.uk) · [Documentation](docs/README.md) · [Issues](https://github.com/Strtus/rvd-railbench/issues)
 
 RVDLAB connects research controllers to rail-based ground testbeds for spacecraft rendezvous and docking. It brings together a C++ experiment runtime, a Python hardware node, and a terminal interface for configuring the platform, running controllers, supervising motion, and recording experiments.
 
@@ -21,7 +21,9 @@ The source is maintained in **RVD-RailBench** (`rvd-railbench`). The included PF
 
 ## Quick start
 
-Use Python 3.10 or newer in a virtual environment. Install the combined package, check the installation, and open the terminal interface:
+Use Python 3.10 or newer in a virtual environment. The [v0.7.0 release](https://github.com/Strtus/rvd-railbench/releases/tag/v0.7.0) provides prebuilt wheels with the C++ runtime for **Windows x86-64**, **Linux x86-64 (manylinux)**, and **macOS 11+ on Apple Silicon (ARM64)**. For other platforms or architectures, see [Build from source](docs/development.md#build-from-source); build and runtime compatibility must be validated separately.
+
+Install the combined package, check the installation, and open the terminal interface:
 
 ```bash
 python -m pip install "rvd-railbench[node]"
