@@ -3,7 +3,9 @@
   <img src="docs/images/rvdlab-logo.png" width="400" alt="RVDLAB">
 </p>
 
-[Website](https://rvdlab.strtus.uk) · [Documentation](docs/README.md) · [Issues](https://github.com/Strtus/rvd-railbench/issues)
+[![Website](https://img.shields.io/badge/Website-orange?style=flat-square)](https://rvdlab.strtus.uk)
+[![Documentation](https://img.shields.io/badge/Documentation-blue?style=flat-square)](docs/README.md)
+[![Issues](https://img.shields.io/badge/Issues-555?style=flat-square&logo=github&logoColor=white)](https://github.com/Strtus/rvd-railbench/issues)
 
 RVDLAB connects research controllers to rail-based ground testbeds for spacecraft rendezvous and docking. It brings together a C++ experiment runtime, a Python hardware node, and a terminal interface for configuring the platform, running controllers, supervising motion, and recording experiments.
 
