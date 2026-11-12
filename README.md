@@ -1,11 +1,18 @@
-# Open-source infrastructure for spacecraft rendezvous and docking experiments.
 <p align="center">
   <img src="docs/images/rvdlab-logo.png" width="400" alt="RVDLAB">
 </p>
 
-[![Website](https://img.shields.io/badge/Website-orange?style=flat-square)](https://rvdlab.strtus.uk)
-[![Documentation](https://img.shields.io/badge/Documentation-blue?style=flat-square)](docs/README.md)
-[![Issues](https://img.shields.io/badge/Issues-555?style=flat-square&logo=github&logoColor=white)](https://github.com/Strtus/rvd-railbench/issues)
+<p align="center">
+  <strong>Open-source infrastructure for spacecraft rendezvous and docking experiments.</strong>
+</p>
+
+<p align="center">
+  <a href="https://rvdlab.strtus.uk"><img src="https://img.shields.io/badge/Website-orange?style=flat" alt="Website"></a>
+  <a href="docs/README.md"><img src="https://img.shields.io/badge/Documentation-blue?style=flat" alt="Documentation"></a>
+  <a href="https://github.com/Strtus/rvd-railbench/issues"><img src="https://img.shields.io/badge/Issues-555?style=flat&amp;logo=github&amp;logoColor=white" alt="Issues"></a>
+</p>
+
+<br>
 
 RVDLAB connects research controllers to rail-based ground testbeds for spacecraft rendezvous and docking. It brings together a C++ experiment runtime, a Python hardware node, and a terminal interface for configuring the platform, running controllers, supervising motion, and recording experiments.
 
