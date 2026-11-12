@@ -164,6 +164,13 @@ Linux/Windows/macOS, and an sdist. Tags publish GitHub releases; PyPI publishing
 also requires the repository's `PYPI_PUBLISH` variable and trusted publisher.
 Intermediate release artifacts are retained for seven days.
 
+The PyPI description comes from the root `README.md`; the summary, project links,
+keywords, and classifiers live in `pyproject.toml`. Keep README image and document
+links absolute so they also work on PyPI. The release workflow runs
+`twine check --strict` on wheels and the sdist before uploading build artifacts.
+PyPI stores metadata with each release, so updating the public description
+requires a new version and release tag.
+
 Reconfigure CMake before producing a research run: metadata captures commit and
 dirty state at configuration time. A source installation is needed for changes
 on `main` that have not yet been included in a release tag.
