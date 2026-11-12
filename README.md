@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/rvdlab-logo.png" width="400" alt="RVDLAB">
+  <img src="https://raw.githubusercontent.com/Strtus/rvd-railbench/main/docs/images/rvdlab-logo.png" width="400" alt="RVDLAB">
 </p>
 
 <p align="center">
@@ -8,7 +8,8 @@
 
 <p align="center">
   <a href="https://rvdlab.strtus.uk"><img src="https://img.shields.io/badge/Website-orange?style=flat" alt="Website"></a>
-  <a href="docs/README.md"><img src="https://img.shields.io/badge/Documentation-blue?style=flat" alt="Documentation"></a>
+  <a href="https://github.com/Strtus/rvd-railbench/blob/main/docs/README.md"><img src="https://img.shields.io/badge/Documentation-blue?style=flat" alt="Documentation"></a>
+  <a href="https://pypi.org/project/rvd-railbench/"><img src="https://img.shields.io/pypi/v/rvd-railbench?style=flat" alt="PyPI"></a>
   <a href="https://github.com/Strtus/rvd-railbench/issues"><img src="https://img.shields.io/badge/Issues-555?style=flat&amp;logo=github&amp;logoColor=white" alt="Issues"></a>
 </p>
 
@@ -30,7 +31,7 @@ The source is maintained in **RVD-RailBench** (`rvd-railbench`). The included PF
 
 ## Quick start
 
-Use Python 3.10 or newer in a virtual environment. The [v0.7.0 release](https://github.com/Strtus/rvd-railbench/releases/tag/v0.7.0) provides prebuilt wheels with the C++ runtime for **Windows x86-64**, **Linux x86-64 (manylinux)**, and **macOS 11+ on Apple Silicon (ARM64)**. For other platforms or architectures, see [Build from source](docs/development.md#build-from-source); build and runtime compatibility must be validated separately.
+Use Python 3.10 or newer in a virtual environment. The [release packages](https://github.com/Strtus/rvd-railbench/releases) provide prebuilt wheels with the C++ runtime for **Windows x86-64**, **Linux x86-64 (manylinux)**, and **macOS 11+ on Apple Silicon (ARM64)**. For other platforms or architectures, see [Build from source](https://github.com/Strtus/rvd-railbench/blob/main/docs/development.md#build-from-source); build and runtime compatibility must be validated separately.
 
 Install the combined package, check the installation, and open the terminal interface:
 
@@ -44,13 +45,13 @@ rvdlab
 
 In the interface, configure a rail profile in **Rail Setup**, then choose a local simulation in **Autonomous Rendezvous**. A physical platform is optional for this workflow.
 
-This README describes the `main` branch. Released packages can lag behind it; use a source checkout for changes that have not reached a release. Available installation and build options are documented in the [development guide](docs/development.md).
+The GitHub `main` branch can include changes not yet available on PyPI; use a source checkout for unreleased changes. Available installation and build options are documented in the [development guide](https://github.com/Strtus/rvd-railbench/blob/main/docs/development.md).
 
 ## System architecture
 
 The research computer runs the controller and operator interface. A separate node, connected to the PLC, owns hardware I/O. This keeps device-specific communication and motion supervision close to the equipment while allowing experiments to run from another machine.
 
-![RVDLAB system architecture](docs/images/system-architecture.png)
+![RVDLAB system architecture](https://raw.githubusercontent.com/Strtus/rvd-railbench/main/docs/images/system-architecture.png)
 
 Figure 1. System architecture. The controller connects to a local Python bridge; the bridge communicates with rail-node over HTTPS, and rail-node accesses the PLC over Modbus TCP. Motion-capture data follows a separate VRPN path.
 
@@ -65,13 +66,13 @@ Figure 1. System architecture. The controller connects to a local Python bridge;
 
 Remote clients authenticate with a personal token and the node's CA certificate. One control thread owns hardware reads, writes, arming, and stopping; request handling, event logging, and motion-capture reception are handled separately.
 
-The current controller bridge uses PLC encoder positions for feedback and controls the X/Y/Z translation axes. Hardware profiles can also describe pitch, yaw, and roll. Optional VRPN poses are available to the interface independently; they do not currently feed the PFCR control loop. See [hardware integration](docs/hardware-integration.md) for the exact interfaces and current limitations.
+The current controller bridge uses PLC encoder positions for feedback and controls the X/Y/Z translation axes. Hardware profiles can also describe pitch, yaw, and roll. Optional VRPN poses are available to the interface independently; they do not currently feed the PFCR control loop. See [hardware integration](https://github.com/Strtus/rvd-railbench/blob/main/docs/hardware-integration.md) for the exact interfaces and current limitations.
 
 ## Motion lifecycle
 
 A control session begins with state checks and an exclusive lease. The lease identifies the client and the axes it may operate. The client maintains a heartbeat while the node checks feedback and commands locally.
 
-![RVDLAB motion lifecycle](docs/images/motion-lifecycle.png)
+![RVDLAB motion lifecycle](https://raw.githubusercontent.com/Strtus/rvd-railbench/main/docs/images/motion-lifecycle.png)
 
 Figure 2. Motion lifecycle. State checks and lease acquisition establish control; waypoint tasks or streamed setpoints drive motion; feedback and fault checks govern execution and stopping.
 
@@ -81,7 +82,7 @@ Figure 2. Motion lifecycle. State checks and lease acquisition establish control
 
 An acknowledged command confirms completion of the node call; reaching a target requires feedback confirmation. Lease expiry, an expired stream deadline, or an operator stop revokes control. Feedback loss, stalls, drive dropouts, and interlock errors can latch a fault.
 
-Stopping behavior accounts for the mechanics of the platform. Axes configured to hold a gravity-loaded structure remain enabled during ordinary stop and fault handling. **Park** moves enabled held axes to configured resting positions before releasing their drives. See [safety and stop behavior](docs/safety.md) before operating equipment.
+Stopping behavior accounts for the mechanics of the platform. Axes configured to hold a gravity-loaded structure remain enabled during ordinary stop and fault handling. **Park** moves enabled held axes to configured resting positions before releasing their drives. See [safety and stop behavior](https://github.com/Strtus/rvd-railbench/blob/main/docs/safety.md) before operating equipment.
 
 ## Build and run from source
 
@@ -98,7 +99,7 @@ rvdlab --root . --check
 rvdlab --root .
 ```
 
-The standalone C++ simulator and replay tool do not require Python at runtime. ONNX Runtime is optional; its build instructions are in the [development guide](docs/development.md#optional-onnx).
+The standalone C++ simulator and replay tool do not require Python at runtime. ONNX Runtime is optional; its build instructions are in the [development guide](https://github.com/Strtus/rvd-railbench/blob/main/docs/development.md#optional-onnx).
 
 ### Record a short simulation
 
@@ -114,7 +115,7 @@ This example uses a virtual clock and stops after at most 12 controller steps. R
 build/release/rail_replay experiments/example
 ```
 
-Configuration files are applied in order, and command-line arguments take precedence. Rail geometry and coordinate mapping, controller settings, and simulation settings are kept in separate files. See [configuration and experiments](docs/configuration.md).
+Configuration files are applied in order, and command-line arguments take precedence. Rail geometry and coordinate mapping, controller settings, and simulation settings are kept in separate files. See [configuration and experiments](https://github.com/Strtus/rvd-railbench/blob/main/docs/configuration.md).
 
 ## Experiment records and replay
 
@@ -153,7 +154,7 @@ Without `--profile`, initialization creates simulated axes. Motion remains disab
 
 For a physical platform, provide a validated hardware profile describing axis directions, encoder scales and zero points, travel and speed limits, register addresses, readiness checks, and holding or parking behavior. Translation uses metres; rotation uses radians. Keep site-specific addresses, credentials, and TLS keys outside the repository, and give each user only their own access folder.
 
-The supplied hardware backend targets Modbus TCP devices. Equipment with different command or stop semantics may require driver changes alongside configuration. Follow the [hardware integration guide](docs/hardware-integration.md) for read-only probing, node setup, commissioning, and remote access.
+The supplied hardware backend targets Modbus TCP devices. Equipment with different command or stop semantics may require driver changes alongside configuration. Follow the [hardware integration guide](https://github.com/Strtus/rvd-railbench/blob/main/docs/hardware-integration.md) for read-only probing, node setup, commissioning, and remote access.
 
 ## Extend and contribute
 
@@ -168,14 +169,14 @@ python -m pytest -c node/pyproject.toml node/tests -q
 python -m pytest -c tui/pyproject.toml tui/tests -q
 ```
 
-CTest covers numerical regression, runtime behavior, simulation, bridge integration, and replay. The Python suites use simulated devices and local test services. The [development guide](docs/development.md) documents the checks; the [baseline notes](docs/baseline.md) record the original numerical results and their limitations.
+CTest covers numerical regression, runtime behavior, simulation, bridge integration, and replay. The Python suites use simulated devices and local test services. The [development guide](https://github.com/Strtus/rvd-railbench/blob/main/docs/development.md) documents the checks; the [baseline notes](https://github.com/Strtus/rvd-railbench/blob/main/docs/baseline.md) record the original numerical results and their limitations.
 
 ## Hardware safety
 
 RVDLAB is research software for supervised ground experiments. Configure and verify units, travel, speeds, feedback timing, drive behavior, interlocks, and resting positions for the actual rig before enabling motion. Simulation tests provide software evidence; physical validation requires measurements on the deployed system.
 
-Keep physical emergency stops, drive protections, and PLC watchdogs independent of the host process. Software holding depends on drive power. Review the [safety guide](docs/safety.md), including fault recovery and held-axis behavior, as part of commissioning.
+Keep physical emergency stops, drive protections, and PLC watchdogs independent of the host process. Software holding depends on drive power. Review the [safety guide](https://github.com/Strtus/rvd-railbench/blob/main/docs/safety.md), including fault recovery and held-axis behavior, as part of commissioning.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+Licensed under the [Apache License 2.0](https://github.com/Strtus/rvd-railbench/blob/main/LICENSE).
