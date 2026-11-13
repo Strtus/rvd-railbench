@@ -548,6 +548,10 @@ class Node:
         target = self.target.get(name)
         return target is None or abs(target - self.position[name]) <= self.axes[name].tolerance
 
+    def _reverses(self, name: str, target: float) -> bool:
+        old, here = self.target.get(name), self.position[name]
+        return old is not None and (old - here) * (target - here) < 0
+
     def _progress_step(self, name: str, speed: float | None = None) -> float:
         axis = self.axes[name]
         expected = 0.5 * (self.speed.get(name, 0.0) if speed is None else speed) * self.settings.stall_timeout_s
@@ -587,12 +591,14 @@ class Node:
                                fault=f"FEEDBACK_LOST: {cause} (no position for {s.max_sample_age_s:g} s)")
             return
         for name in self.target:
-            if not self._at_target(name):
-                mark = self._progress.get(name)
-                if mark and now - mark[0] > s.stall_timeout_s:
-                    self._request_stop("stalled", force=True, revoke=True,
-                                       fault=f"MOTION_STALLED: {name} made no progress for {s.stall_timeout_s:g} s")
-                    return
+            if self._at_target(name):
+                self._progress[name] = (now, self.position[name])  # time spent waiting at the target is no stall
+                continue
+            mark = self._progress.get(name)
+            if mark and now - mark[0] > s.stall_timeout_s:
+                self._request_stop("stalled", force=True, revoke=True,
+                                   fault=f"MOTION_STALLED: {name} made no progress for {s.stall_timeout_s:g} s")
+                return
         job = self.job
         if job and job["status"] == "running":
             if now - job["started"] > s.task_timeout_s:
@@ -695,7 +701,8 @@ class Node:
 
     def _command(self, targets: dict[str, float], speeds: dict[str, float]) -> float:
         with self.lock:
-            fresh = [n for n in targets if self._at_target(n)]
+            # The stall clock restarts for an axis that was at its target or is now sent back the way it came.
+            fresh = [n for n in targets if self._at_target(n) or self._reverses(n, targets[n])]
         self.backend.command(targets, speeds)
         with self.lock:
             now = self.clock()
