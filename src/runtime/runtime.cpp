@@ -91,7 +91,7 @@ int run(const Options& opt) {
   const StateEstimate initial{Frame::Hill, {h0[0], h0[1], h0[2], 0, 0, 0}, m0.t_acquired};
   ctrl.reset(initial);
   experiment.initial(initial);
-  std::printf("model %s, policy %s, start hill (%.3f, %.3f, %.3f) m\n", params::kModelId,
+  std::printf("model %s, policy %s, start hill (%.3f, %.3f, %.3f) m\n", cfg.model_id.c_str(),
               ctrl.diagnostics().backend.c_str(), h0[0], h0[1], h0[2]);
 
   const double t_start = io->now_s();
@@ -179,6 +179,13 @@ int run(const Options& opt) {
       } else if (r.status != Status::Run) {
         ok = false;
         reason = r.reason;
+        if (reason == "CONTACT" || reason == "CONTACT_FAIL") {
+          char text[160];
+          std::snprintf(text, sizeof text, "lateral %.4f m, lateral speed %.4f m/s, closing speed %.4f m/s",
+                        r.contact[0], r.contact[1], r.contact[2]);
+          experiment.event(m.t_acquired, "contact", text);
+          std::printf("contact plane: %s\n", text);
+        }
         if (r.status == Status::Abort) safety.fault(reason);
       }
     } else {

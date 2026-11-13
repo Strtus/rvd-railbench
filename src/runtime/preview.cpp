@@ -87,27 +87,9 @@ Vec6 cwh_step(const Vec6& s, const Vec3& force) {
 void position(std::ostream& stream, const Vec6& s) {
   for (int i = 0; i < 3; ++i) stream << ',' << s[i];
 }
-void push(std::array<float, 3 * P::kHistoryLen>& history, const Vec3& value) {
+void push(pfcr::History& history, const Vec3& value) {
   for (int i = 0; i < 3 * (P::kHistoryLen - 1); ++i) history[i] = history[i + 3];
   for (int i = 0; i < 3; ++i) history[3 * (P::kHistoryLen - 1) + i] = static_cast<float>(value[i] / P::kUMax);
-}
-pfcr::Obs observation(const Vec6& s, const std::array<float, 12>& nominal,
-                      const std::array<float, 12>& applied) {
-  pfcr::Obs o{};
-  for (int i = 0; i < 3; ++i) {
-    o[i] = static_cast<float>(s[i] / P::kPosScale);
-    o[i + 3] = static_cast<float>(s[i + 3] / P::kVelScale);
-  }
-  for (int i = 0; i < 12; ++i) {
-    o[i + 6] = nominal[i];
-    o[i + 18] = applied[i];
-  }
-  o[30] = static_cast<float>(P::kNu0 + P::kNu1 * norm(s, 0) - norm(s, 3));
-  for (int i = 0; i < 3; ++i)
-    o[i + 31] =
-        static_cast<float>((P::kMaxVel * P::kMaxVel - s[i + 3] * s[i + 3]) / (P::kMaxVel * P::kMaxVel));
-  // There are no filter interventions in this independent rollout (o[34:36] = 0).
-  return o;
 }
 }  // namespace
 
@@ -115,7 +97,8 @@ void write_preview(const std::string& experiment, const std::string& model, cons
   Options options;
   load_config(experiment + "/configuration.ini", options);
   validate(options);
-  verify_artifact(model, options.onnx);
+  const auto& spec = model_of(options.rail);
+  verify_artifact(model, spec, options.onnx);
   const auto rows = read_rows(experiment + "/trajectory.csv");
   if (number(rows.front(), "k") != 0 || rows.front().at("status") != "RUN")
     throw std::runtime_error("preview needs a run starting at k=0");
@@ -132,30 +115,41 @@ void write_preview(const std::string& experiment, const std::string& model, cons
   nominal.exceptions(std::ios::badbit | std::ios::failbit);
   local.exceptions(std::ios::badbit | std::ios::failbit);
   nominal << std::setprecision(17) << "k,hx,hy,hz,hvx,hvy,hvz,ud0,ud1,ud2,status\n";
-  Vec6 s = state(rows.front());
+  Vec6 s = state(rows.front()), before = s;
   Vec3 previous{};
-  std::array<float, 12> nominal_history{}, applied_history{};
+  pfcr::History nominal_history{}, applied_history{};
   for (int k = 0; k <= static_cast<int>(P::kMaxTime / P::kDt); ++k) {
     std::string status = "RUN";
-    if (norm(s, 0) <= P::kDockRadius && norm(s, 3) <= P::kDockSpeed && s[0] >= P::kFrontBuffer - 1e-8)
+    if (spec.docking == pfcr::Docking::ContactPlane) {
+      const auto contact = k > 0 ? pfcr::contact_check(spec, before, s) : pfcr::Contact{};
+      if (contact.crossed) status = contact.success ? "DOCKED" : "CONTACT_FAIL";
+    } else if (norm(s, 0) <= P::kDockRadius && norm(s, 3) <= P::kDockSpeed &&
+               s[0] >= P::kFrontBuffer - 1e-8) {
       status = "DOCKED";
-    else if (s[0] < P::kFrontBuffer - 1e-8)
-      status = "FRONT_PLANE_CROSSED";
-    else if (norm(s, 0) > P::kLeaveRadius)
-      status = "LEFT_MODEL_DOMAIN";
-    else if (k * P::kDt >= P::kMaxTime)
-      status = "TIMEOUT";
+    }
+    if (status == "RUN") {
+      if (s[0] < P::kFrontBuffer - 1e-8)
+        status = "FRONT_PLANE_CROSSED";
+      else if (norm(s, 0) > P::kLeaveRadius)
+        status = "LEFT_MODEL_DOMAIN";
+      else if (k * P::kDt >= P::kMaxTime)
+        status = "TIMEOUT";
+    }
     Vec3 desired{};
     if (status == "RUN") {
-      const auto action = policy->act(observation(s, nominal_history, applied_history));
+      // No filter interventions in this independent rollout.
+      const auto action =
+          policy->act(pfcr::observation(spec, s, nominal_history, applied_history, 0.0f, 0.0f));
+      const double authority = P::kUMax * pfcr::action_scale(spec, s[0]);
       for (int i = 0; i < 3; ++i)
-        desired[i] = std::clamp(static_cast<double>(action[i]) * P::kUMax, -P::kUMax, P::kUMax);
+        desired[i] = std::clamp(static_cast<double>(action[i]) * authority, -P::kUMax, P::kUMax);
     }
     nominal << k;
     for (double value : s) nominal << ',' << value;
     for (double value : desired) nominal << ',' << value;
     nominal << ',' << status << '\n';
     if (status != "RUN") break;
+    before = s;
     previous = actuate(desired, previous, options.rail.thruster);
     s = cwh_step(s, previous);
     push(nominal_history, desired);

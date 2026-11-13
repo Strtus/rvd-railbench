@@ -5,13 +5,13 @@
 
 #include "rvd/config.hpp"
 namespace rvd {
-std::string find_model_dir();
+std::string find_model_dir(const std::string& model_id);
 }
 
 namespace rvd {
 using pfcr::Vec3;
 struct Options {
-  std::string model_dir = find_model_dir();
+  std::string model_dir;  // empty: the configured model under policies/
   bool onnx = false, lab = false, fast = false;
   bool open_loop = false;
   int max_steps = -1;

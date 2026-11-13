@@ -1,9 +1,7 @@
-// Generated from the checkpoint run configuration. Do not edit.
+// Shared by every checkpoint in pfcr_models.hpp. Do not edit.
 #pragma once
 
 namespace pfcr::params {
-inline constexpr const char* kModelId = "E_PFCR-DQP_s41_step5120000";
-
 inline constexpr double kN = 0.0010269999999999999;    // mean motion [rad/s]
 inline constexpr double kMass = 12;                     // [kg]
 inline constexpr double kDt = 1;                        // control period [s]
@@ -19,7 +17,6 @@ inline constexpr double kLeaveRadius = 200;             // [m]
 inline constexpr int kHistoryLen = 4;
 inline constexpr double kPosScale = 100;
 inline constexpr double kVelScale = 1;
-inline constexpr int kObsDim = 36;
 
 inline constexpr double kFrontBuffer = 0.25;            // [m]
 inline constexpr int kGuardHorizon = 512;

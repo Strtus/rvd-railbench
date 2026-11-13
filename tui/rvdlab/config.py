@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 Vec3 = tuple[float, float, float]
-MODEL_ID = "E_PFCR-DQP_s41_step5120000"
+MODEL_ID = "IDSS_PFCR-DQP_s49_step10240000"
+# Checkpoints rail_main is built for (include/pfcr/pfcr_models.hpp); the first is the default.
+MODEL_IDS = (MODEL_ID, "E_PFCR-DQP_s41_step5120000")
 DEFAULT_FILES = ("configs/rail.ini", "configs/pfcr_dqp.ini", "configs/simulation.ini")
 SECTIONS = {"rail", "mapping", "controller", "simulation", "experiment"}
 
@@ -167,7 +169,7 @@ def _apply(profile: Profile, key: str, value: str) -> None:
             raise ConfigError("unsupported controller")
         ctrl.type = value
     elif key == "controller.model_id":
-        if value != MODEL_ID:
+        if value not in MODEL_IDS:
             raise ConfigError("incompatible policy artifact")
         ctrl.model_id = value
     elif key == "controller.backend":

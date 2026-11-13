@@ -67,12 +67,13 @@ Experiment::Experiment(const Options& o) {
   auto config = open(directory_ / "configuration.ini");
   config << configuration_snapshot(o);
   config.close();
+  const auto& model = model_of(o.rail);
   auto metadata = open(directory_ / "metadata.json");
   metadata << "{\n  \"schema_version\": 1,\n  \"experiment_id\": " << quote(directory_.filename().string())
            << ",\n  \"started_utc\": " << quote(utc(false))
            << ",\n  \"controller\": \"pfcr-dqp\",\n  \"controller_version\": \"1\",\n  \"model_id\": "
-           << quote(pfcr::params::kModelId) << ",\n  \"weights_sha256\": " << quote(kWeightsSha256)
-           << ",\n  \"onnx_sha256\": " << (o.onnx ? quote(kOnnxSha256) : "null")
+           << quote(model.id) << ",\n  \"weights_sha256\": " << quote(model.weights_sha256)
+           << ",\n  \"onnx_sha256\": " << (o.onnx ? quote(model.onnx_sha256) : "null")
            << ",\n  \"backend\": " << quote(o.onnx ? "onnx" : "builtin")
            << ",\n  \"git_commit_at_build\": " << quote(RVD_GIT_COMMIT)
            << ",\n  \"source_dirty_at_build\": " << quote(RVD_GIT_DIRTY) << ",\n  \"seed\": " << o.seed

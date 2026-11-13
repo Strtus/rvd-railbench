@@ -1,0 +1,22 @@
+{
+  "model_id": "IDSS_PFCR-DQP_s49_step10240000",
+  "controller": "pfcr-dqp",
+  "interface_version": 2,
+  "observation_dimension": 40,
+  "action_dimension": 3,
+  "period_s": 1,
+  "history_length": 4,
+  "actuator_profile": {
+    "tau": 2.0,
+    "scale": [
+      0.85,
+      0.85,
+      0.85
+    ],
+    "deadzone": 0.025
+  },
+  "artifacts": {
+    "pfcr_policy_weights.bin": "36b5f8d1037b6c659e2826a5c26905219181e967cf8e98837fe8a8e26c25eb30",
+    "pfcr_policy.onnx": "8eeb0f94aa94a2cb5cd132619453bb8bb35111f9fb6618ddf469a259b77a60ea"
+  }
+}

@@ -82,10 +82,10 @@ std::string sha256_file(const std::string& path) {
   for (auto v : h) out << std::setw(8) << v;
   return out.str();
 }
-void verify_artifact(const std::string& dir, bool onnx) {
-  if (sha256_file(dir + "/pfcr_policy_weights.bin") != kWeightsSha256)
+void verify_artifact(const std::string& dir, const pfcr::ModelSpec& model, bool onnx) {
+  if (sha256_file(dir + "/pfcr_policy_weights.bin") != model.weights_sha256)
     throw std::runtime_error("policy weights SHA-256 mismatch: incompatible or corrupt artifact");
-  if (onnx && sha256_file(dir + "/pfcr_policy.onnx") != kOnnxSha256)
+  if (onnx && sha256_file(dir + "/pfcr_policy.onnx") != model.onnx_sha256)
     throw std::runtime_error("ONNX SHA-256 mismatch: incompatible or corrupt artifact");
 }
 }  // namespace rvd

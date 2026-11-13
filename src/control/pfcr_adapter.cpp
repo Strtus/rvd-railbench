@@ -17,7 +17,8 @@ void PfcrAdapter::initialize(const ControllerInit& s) {
   // Failed initialization must not leave a previously initialized controller usable.
   controller_.reset();
   status_ = ControllerStatus::Uninitialized;
-  verify_artifact(s.artifact_directory, s.onnx);
+  const auto& model = model_of(config_);
+  verify_artifact(s.artifact_directory, model, s.onnx);
   std::unique_ptr<pfcr::Policy> policy;
   if (s.onnx) {
 #ifdef PFCR_WITH_ONNXRUNTIME
@@ -27,7 +28,7 @@ void PfcrAdapter::initialize(const ControllerInit& s) {
 #endif
   } else
     policy = pfcr::make_builtin_policy(s.artifact_directory + "/pfcr_policy_weights.bin");
-  controller_ = std::make_unique<pfcr::Controller>(std::move(policy), config_.thruster,
+  controller_ = std::make_unique<pfcr::Controller>(model, std::move(policy), config_.thruster,
                                                    pfcr::VelocitySource::Model, config_.tracking_tol_hill_m);
   status_ = ControllerStatus::Ready;
 }

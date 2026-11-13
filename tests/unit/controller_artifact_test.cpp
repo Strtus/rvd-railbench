@@ -22,15 +22,38 @@ int main(int argc, char** argv) {
   }
   CHECK(rvd::sha256_file(scratch.string()) ==
         "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
-  const auto dir = std::string(argv[1]) + "/policies/" + pfcr::params::kModelId;
-  rvd::verify_artifact(dir, true);
+  const auto& spec = pfcr::default_model();
+  const auto dir = std::string(argv[1]) + "/policies/" + spec.id;
+  rvd::verify_artifact(dir, spec, true);
+  for (const auto& m : pfcr::kModels) {
+    const auto other = std::string(argv[1]) + "/policies/" + m.id;
+    rvd::verify_artifact(other, m, true);
+    if (std::string(m.id) != spec.id) {
+      rejects([&] { rvd::verify_artifact(other, spec, false); });
+      // A policy is only accepted for the observation layout it was trained with.
+      rejects([&] { pfcr::Controller(spec, pfcr::make_builtin_policy(other + "/pfcr_policy_weights.bin")); });
+      rvd::RailConfig config;
+      config.model_id = m.id;
+      rvd::PfcrAdapter old_model{config};
+      rejects([&] { old_model.initialize({dir, false}); });
+      old_model.initialize({other, false});
+      const rvd::StateEstimate start{rvd::Frame::Hill, {18, .3, -.2, 0, 0, 0}, 0};
+      old_model.reset(start);
+      CHECK(old_model.update({start, {}}).status == rvd::ControllerStatus::Running);
+      CHECK(static_cast<int>(old_model.last_result().obs.size()) == m.obs_dim);
+    }
+  }
+  CHECK(pfcr::find_model("unknown") == nullptr);
+  rvd::RailConfig unknown;
+  unknown.model_id = "unknown";
+  rejects([&] { rvd::validate(unknown); });
   const auto corrupt_dir = std::filesystem::path("corrupt-policy-test");
   std::filesystem::create_directories(corrupt_dir);
   {
     std::ofstream f(corrupt_dir / "pfcr_policy_weights.bin", std::ios::binary);
     f << "corrupt";
   }
-  rejects([&] { rvd::verify_artifact(corrupt_dir.string(), false); });
+  rejects([&] { rvd::verify_artifact(corrupt_dir.string(), spec, false); });
   std::filesystem::remove(corrupt_dir / "pfcr_policy_weights.bin");
   std::filesystem::remove(corrupt_dir);
   std::filesystem::remove(scratch);
@@ -55,7 +78,7 @@ int main(int argc, char** argv) {
   auto wrong = initial;
   wrong.frame = rvd::Frame::Rail;
   rejects([&] { adapter.update({wrong, {}}); });
-  pfcr::Controller original(pfcr::make_builtin_policy(dir + "/pfcr_policy_weights.bin"),
+  pfcr::Controller original(spec, pfcr::make_builtin_policy(dir + "/pfcr_policy_weights.bin"),
                             rvd::RailConfig{}.thruster, pfcr::VelocitySource::Model, 1.0);
   original.reset(initial.state);
   for (int k = 0; k < 40; ++k) {
