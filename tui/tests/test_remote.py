@@ -19,6 +19,7 @@ from rvd_railnode.server import NodeServer, UserStore  # noqa: E402
 from rvd_railnode.sim import SimBackend  # noqa: E402
 
 from rvdlab.app import RvdLabApp  # noqa: E402
+from rvdlab.config import MODEL_ID  # noqa: E402
 from rvdlab.project import find_build  # noqa: E402
 from rvdlab.remote import (  # noqa: E402
     REMOTE_TIMING, SPEED_FLOOR, Bridge, SimAxis, connect, connection_path, move, remote_override,
@@ -131,7 +132,7 @@ def test_rail_main_runs_through_the_bridge(node, tmp_path):
     bridge.start()
     override = tmp_path / "remote.ini"
     override.write_text(remote_override(3))
-    model = ROOT / "policies" / "E_PFCR-DQP_s41_step5120000"
+    model = ROOT / "policies" / MODEL_ID
     result = subprocess.run([str(find_build(ROOT).rail_main), "--config", str(ROOT / "configs" / "rail.ini"),
                              "--config", str(override), "--model-dir", str(model), "--bridge", str(bridge.port),
                              "--experiment-dir", str(tmp_path / "run"), "--log", str(tmp_path / "run.csv")],

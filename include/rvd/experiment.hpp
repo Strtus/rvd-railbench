@@ -27,5 +27,6 @@ struct ReplaySummary {
   int steps = 0;
   double max_error = 0;
 };
+// An empty model directory selects the recorded model under policies/.
 ReplaySummary replay(const std::string& experiment_directory, const std::string& model_directory);
 }  // namespace rvd

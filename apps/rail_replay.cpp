@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    const auto r = rvd::replay(argv[1], argc == 3 ? argv[2] : rvd::find_model_dir());
+    const auto r = rvd::replay(argv[1], argc == 3 ? argv[2] : "");
     std::printf("replayed %d controller inputs, maximum output error %.17g\n", r.steps, r.max_error);
     return 0;
   } catch (const std::exception& e) {

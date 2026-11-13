@@ -11,7 +11,7 @@ import time
 rail = Path(sys.argv[1])
 root = Path(sys.argv[2]).resolve()
 scratch = Path(tempfile.mkdtemp(prefix="bridge-", dir=Path.cwd())).resolve()
-model = root / "policies/E_PFCR-DQP_s41_step5120000"
+model = root / "policies/IDSS_PFCR-DQP_s49_step10240000"
 
 
 class Peer:

@@ -36,7 +36,10 @@ struct RailConfig {
   double tracking_tol_hill_m = 1.0;
   double ood_warn_z = 6.5;
   pfcr::ActuatorEmulation thruster{2.0, {0.85, 0.85, 0.85}, 0.025};
+  std::string model_id = pfcr::default_model().id;
 };
+// Model of a validated configuration.
+const pfcr::ModelSpec& model_of(const RailConfig& config);
 
 void validate(const RailConfig& config);
 }  // namespace rvd

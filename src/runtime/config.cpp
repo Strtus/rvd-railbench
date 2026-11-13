@@ -120,9 +120,10 @@ void load_config(const std::string& path, Options& o) {
         triple(val, c.target_rail);
       else if (key == "controller.type")
         require(val == "pfcr-dqp", "unsupported controller");
-      else if (key == "controller.model_id")
-        require(val == pfcr::params::kModelId, "incompatible policy artifact");
-      else if (key == "controller.period_s")
+      else if (key == "controller.model_id") {
+        require(pfcr::find_model(val) != nullptr, "incompatible policy artifact");
+        c.model_id = val;
+      } else if (key == "controller.period_s")
         c.period_s = number(val);
       else if (key == "controller.backend") {
         require(val == "builtin" || val == "onnx", "unsupported policy backend");
@@ -176,7 +177,13 @@ void load_config(const std::string& path, Options& o) {
   o.config_files.push_back(path);
 }
 
+const pfcr::ModelSpec& model_of(const RailConfig& c) {
+  const auto* model = pfcr::find_model(c.model_id);
+  require(model != nullptr, "incompatible policy artifact");
+  return *model;
+}
 void validate(const RailConfig& c) {
+  model_of(c);
   require(c.period_s == pfcr::params::kDt, "PFCR artifact requires exactly 1 s control period");
   std::set<int> axes;
   for (int i = 0; i < 3; ++i) {
@@ -259,7 +266,7 @@ std::string configuration_snapshot(const Options& o) {
   triple_out("sign", c.sign);
   triple_out("scale", c.scale);
   triple_out("target_m", c.target_rail);
-  s << "[controller]\ntype = pfcr-dqp\nmodel_id = " << pfcr::params::kModelId << "\nperiod_s = " << c.period_s
+  s << "[controller]\ntype = pfcr-dqp\nmodel_id = " << c.model_id << "\nperiod_s = " << c.period_s
     << "\nbackend = " << (o.onnx ? "onnx" : "builtin") << "\nood_warn_z = " << c.ood_warn_z
     << "\n[simulation]\nmode = " << (o.plc ? "plc" : (o.bounded ? "bounded" : "ideal"))
     << "\nseed = " << o.seed << "\nnoise_m = " << o.noise << "\nlatency_s = " << o.sim_latency

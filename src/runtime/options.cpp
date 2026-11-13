@@ -6,14 +6,14 @@
 
 #include "rvd/runtime.hpp"
 namespace rvd {
-std::string find_model_dir() {
+std::string find_model_dir(const std::string& model_id) {
   for (const char* up : {"", "../", "../../", "../../../"}) {
     for (const char* root : {"policies/", "model/"}) {
-      const auto d = std::string(up) + root + pfcr::params::kModelId;
+      const auto d = std::string(up) + root + model_id;
       if (std::filesystem::is_regular_file(d + "/pfcr_policy_weights.bin")) return d;
     }
   }
-  return "policies/" + std::string(pfcr::params::kModelId);
+  return "policies/" + model_id;
 }
 Options parse_options(int argc, char** argv) {
   Options opt;
@@ -105,8 +105,9 @@ Options parse_options(int argc, char** argv) {
       throw std::invalid_argument("unknown argument: " + a);
   }
   // Compatibility with the original default model directory after reorganization.
-  const std::string legacy = "model/" + std::string(pfcr::params::kModelId);
-  if (opt.model_dir == legacy && !std::filesystem::exists(legacy)) opt.model_dir = find_model_dir();
+  const std::string legacy = "model/" + opt.rail.model_id;
+  if (opt.model_dir.empty() || (opt.model_dir == legacy && !std::filesystem::exists(legacy)))
+    opt.model_dir = find_model_dir(opt.rail.model_id);
   validate(opt);
   return opt;
 }

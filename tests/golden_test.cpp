@@ -1,4 +1,4 @@
-// golden_test <repo_dir> [--onnx] [--trace RUN]
+// golden_test <repo_dir> <model_id> [--onnx] [--trace RUN]
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +20,7 @@ struct Csv {
   std::map<std::string, int> col;
   double num(size_t r, const std::string& c) const { return std::strtod(rows[r][col.at(c)].c_str(), nullptr); }
   const std::string& str(size_t r, const std::string& c) const { return rows[r][col.at(c)]; }
+  bool has(const std::string& c) const { return col.count(c) > 0; }
 };
 
 Csv read_csv(const std::string& path) {
@@ -48,11 +49,13 @@ struct MaxDiff {
 // replays reference actions in order
 class ReplayPolicy final : public Policy {
  public:
-  explicit ReplayPolicy(std::vector<Action> a) : a_(std::move(a)) {}
+  ReplayPolicy(std::vector<Action> a, int dim) : a_(std::move(a)), dim_(dim) {}
   Action act(const Obs&) override { return i_ < a_.size() ? a_[i_++] : Action{0, 0, 0}; }
+  int input_dim() const override { return dim_; }
   std::string name() const override { return "replay"; }
  private:
   std::vector<Action> a_;
+  int dim_;
   size_t i_ = 0;
 };
 
@@ -68,35 +71,39 @@ std::unique_ptr<Policy> make_policy(const std::string& mdir, bool onnx) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) { std::fprintf(stderr, "usage: golden_test <package_dir> [--onnx]\n"); return 2; }
+  if (argc < 3) { std::fprintf(stderr, "usage: golden_test <package_dir> <model_id> [--onnx] [--trace RUN]\n"); return 2; }
   const std::string pkg = argv[1];
+  const ModelSpec* spec = find_model(argv[2]);
+  if (!spec) { std::fprintf(stderr, "unknown model %s\n", argv[2]); return 2; }
   bool onnx = false;
   int trace_run = -1;
-  for (int i = 2; i < argc; ++i) {
+  for (int i = 3; i < argc; ++i) {
     if (std::string(argv[i]) == "--onnx") onnx = true;
     if (std::string(argv[i]) == "--trace" && i + 1 < argc) trace_run = std::atoi(argv[++i]);
   }
-  const std::string mdir = pkg + "/policies/" + params::kModelId;
+  const std::string mdir = pkg + "/policies/" + spec->id, gdir = pkg + "/golden/" + spec->id;
+  const int dim = spec->obs_dim;
   bool ok = true;
+  std::printf("model %s, observation %d\n", spec->id, dim);
 
   {
     auto pol = make_policy(mdir, onnx);
-    Csv c = read_csv(pkg + "/golden/policy_cases.csv");
+    Csv c = read_csv(gdir + "/policy_cases.csv");
     MaxDiff d;
     for (size_t r = 0; r < c.rows.size(); ++r) {
-      Obs o;
-      for (int i = 0; i < params::kObsDim; ++i) o[i] = static_cast<float>(c.num(r, "obs" + std::to_string(i)));
+      Obs o(static_cast<size_t>(dim));
+      for (int i = 0; i < dim; ++i) o[i] = static_cast<float>(c.num(r, "obs" + std::to_string(i)));
       const Action a = pol->act(o);
       for (int i = 0; i < 3; ++i) d.add(a[i], c.num(r, "a" + std::to_string(i)));
     }
-    const bool pass = d.v <= 1e-5;
+    const bool pass = !c.rows.empty() && pol->input_dim() == dim && d.v <= 1e-5;
     ok &= pass;
     std::printf("[policy %s] %zu cases, max |action - reference| = %.3g  %s\n", pol->name().c_str(), c.rows.size(), d.v,
                 pass ? "PASS" : "FAIL");
   }
 
-  Csv meta = read_csv(pkg + "/golden/controller_runs_meta.csv");
-  Csv g = read_csv(pkg + "/golden/controller_runs.csv");
+  Csv meta = read_csv(gdir + "/controller_runs_meta.csv");
+  Csv g = read_csv(gdir + "/controller_runs.csv");
   for (int pass_id = 0; pass_id < 2; ++pass_id) {
   const bool forced = pass_id == 0;
   std::printf(forced ? "-- (a) logic check, reference actions forced (tolerance 1e-9 N / m, float32 obs exact to 1e-6)\n"
@@ -112,7 +119,9 @@ int main(int argc, char** argv) {
     for (size_t row = 0; row < g.rows.size(); ++row)
       if (int(g.num(row, "run")) == run && g.str(row, "status") == "RUN")
         ref_actions.push_back({float(g.num(row, "a0")), float(g.num(row, "a1")), float(g.num(row, "a2"))});
-    Controller ctrl(forced ? std::unique_ptr<Policy>(new ReplayPolicy(ref_actions)) : make_policy(mdir, onnx), act);
+    Controller ctrl(*spec,
+                    forced ? std::unique_ptr<Policy>(new ReplayPolicy(ref_actions, dim)) : make_policy(mdir, onnx),
+                    act);
     Vec6 s0{meta.num(mr, "x0"), meta.num(mr, "y0"), meta.num(mr, "z0"), meta.num(mr, "vx0"), meta.num(mr, "vy0"),
             meta.num(mr, "vz0")};
     ctrl.reset(s0);
@@ -130,8 +139,14 @@ int main(int argc, char** argv) {
       reason_ref = g.str(row, "reason");
       k_ref = int(g.num(row, "k"));
       for (int i = 0; i < 6; ++i) dstate.add(r.state[i], g.num(row, "s" + std::to_string(i)));
-      if (status_ref != "RUN") break;
-      for (int i = 0; i < params::kObsDim; ++i) dobs.add(r.obs[i], g.num(row, "obs" + std::to_string(i)));
+      if (status_ref != "RUN") {
+        if (g.has("c0"))
+          for (int i = 0; i < 3; ++i) dstate.add(r.contact[i], g.num(row, "c" + std::to_string(i)));
+        break;
+      }
+      if (r.status != Status::Run) break;  // ended before the reference (free-running drift)
+      if (static_cast<int>(r.obs.size()) != dim) { dobs.v = INFINITY; break; }
+      for (int i = 0; i < dim; ++i) dobs.add(r.obs[i], g.num(row, "obs" + std::to_string(i)));
       for (int i = 0; i < 3; ++i) {
         dact.add(r.action[i], g.num(row, "a" + std::to_string(i)));
         dforce.add(r.u_des[i], g.num(row, "ud" + std::to_string(i)));
@@ -147,7 +162,7 @@ int main(int argc, char** argv) {
           sa.add(r.action[i], g.num(row, "a" + std::to_string(i)));
           sf.add(r.u_act[i], g.num(row, "ua" + std::to_string(i)));
         }
-        for (int i = 0; i < params::kObsDim; ++i) so.add(r.obs[i], g.num(row, "obs" + std::to_string(i)));
+        for (int i = 0; i < dim; ++i) so.add(r.obs[i], g.num(row, "obs" + std::to_string(i)));
         std::printf("  k=%3d  |dobs| %.2e  |daction| %.2e  |du_act| %.2e  |dstate| %.2e  interv %d/%d  backup %d/%d\n",
                     r.k, so.v, sa.v, sf.v, dstate.v, int(r.intervened), int(g.num(row, "interv")),
                     int(r.backup_active), int(g.num(row, "backup")));

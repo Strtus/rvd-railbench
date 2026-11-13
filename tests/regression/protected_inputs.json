@@ -1,7 +1,11 @@
 {
-  "src/pfcr_controller.cpp": "416ab32542a5bd954ff3f6c3efc28320563a4a480b262fdcfc1a85f29ecb44cd",
-  "include/pfcr/pfcr_params.hpp": "d6f780f53dba8d2191ec2e2bab5efd756742a08256c36073fb06594611cff2a6",
-  "golden/policy_cases.csv": "f80c16a518537e7d412fa740649c259bf2996942d73cc42eb26bad401f932c18",
-  "golden/controller_runs.csv": "25db5b6eac302e941b238cf26dfa31b695cddc1ac42d897cbc3ecf9540157f3f",
-  "golden/controller_runs_meta.csv": "34dd2c18d7b8da80379f3eec0b80e7ca7865ce98c060ba39e41fbe283d80e1ca"
+  "src/pfcr_controller.cpp": "955f5fb514277de911ee487ae6837ff3be7d43ec05939e66a9b4247ea7704320",
+  "include/pfcr/pfcr_params.hpp": "63da9f95735da66f7bb28c4641066bdb9bf547cf1e6a8e69085b9d1e2bf9559a",
+  "include/pfcr/pfcr_models.hpp": "5c74f555c193536946b3c399ec72a0b3f4df162d04d8ed6ba47f3d847d73baef",
+  "golden/E_PFCR-DQP_s41_step5120000/policy_cases.csv": "f80c16a518537e7d412fa740649c259bf2996942d73cc42eb26bad401f932c18",
+  "golden/E_PFCR-DQP_s41_step5120000/controller_runs.csv": "25db5b6eac302e941b238cf26dfa31b695cddc1ac42d897cbc3ecf9540157f3f",
+  "golden/E_PFCR-DQP_s41_step5120000/controller_runs_meta.csv": "34dd2c18d7b8da80379f3eec0b80e7ca7865ce98c060ba39e41fbe283d80e1ca",
+  "golden/IDSS_PFCR-DQP_s49_step10240000/policy_cases.csv": "7e50410ff59c5039e6d6e28db296c899a520b3a5312975e773d4305ab797b14e",
+  "golden/IDSS_PFCR-DQP_s49_step10240000/controller_runs.csv": "186172225f471baff5c2a95c8750973a5d7f207d8ce0c5a1405ac88fa844a629",
+  "golden/IDSS_PFCR-DQP_s49_step10240000/controller_runs_meta.csv": "3ebff53da85c802be97a25d900948b062ff3a89ee06c26ac6806f1506ae5f04a"
 }

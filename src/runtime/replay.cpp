@@ -52,7 +52,7 @@ ReplaySummary replay(const std::string& directory, const std::string& model) {
   load_config(directory + "/configuration.ini", options);
   validate(options);
   PfcrAdapter controller(options.rail);
-  controller.initialize({model, options.onnx});
+  controller.initialize({model.empty() ? find_model_dir(options.rail.model_id) : model, options.onnx});
   std::ifstream initial(directory + "/initial_state.csv"), inputs(directory + "/controller.csv");
   if (!initial || !inputs) throw std::runtime_error("incomplete experiment inputs");
   std::string line;

@@ -1,4 +1,5 @@
 // Actor MLP evaluated from pfcr_policy_weights.bin (same computation as pfcr_policy.onnx).
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -31,7 +32,7 @@ Blob read_blob(const std::string& path) {
   f.read(reinterpret_cast<char*>(&B.n_hidden), 4);
   if (!f || std::string(magic, 4) != "PFCR" || version != 1)
     throw std::runtime_error("bad policy weights header");
-  if (B.obs_dim != params::kObsDim || B.act_dim != 3)
+  if (B.obs_dim == 0 || B.obs_dim > 4096 || B.act_dim != 3)
     throw std::runtime_error("policy dimensions do not match");
   if (B.n_hidden == 0 || B.n_hidden > 16) throw std::runtime_error("invalid hidden layer count");
   B.sizes.resize(B.n_hidden);
@@ -72,8 +73,10 @@ class BuiltinPolicy final : public Policy {
  public:
   explicit BuiltinPolicy(const std::string& path) : B_(read_blob(path)) {}
   std::string name() const override { return "builtin-mlp"; }
+  int input_dim() const override { return static_cast<int>(B_.obs_dim); }
 
   Action act(const Obs& obs) override {
+    if (obs.size() != B_.obs_dim) throw std::invalid_argument("observation size does not match the policy");
     std::vector<float> h(B_.obs_dim);
     for (uint32_t i = 0; i < B_.obs_dim; ++i) {
       double z = (static_cast<double>(obs[i]) - B_.mean[i]) / B_.std[i];
@@ -111,10 +114,8 @@ std::unique_ptr<Policy> make_builtin_policy(const std::string& weights_bin_path)
 bool ObsStats::load(const std::string& weights_bin_path) {
   try {
     const Blob B = read_blob(weights_bin_path);
-    for (int i = 0; i < params::kObsDim; ++i) {
-      mean[i] = B.mean[i];
-      std[i] = B.std[i];
-    }
+    mean = B.mean;
+    std = B.std;
     return true;
   } catch (const std::exception&) {
     return false;
@@ -124,7 +125,8 @@ bool ObsStats::load(const std::string& weights_bin_path) {
 double ObsStats::max_abs_z(const Obs& obs, int* index) const {
   double worst = 0.0;
   int at = 0;
-  for (int i = 0; i < params::kObsDim; ++i) {
+  const int n = static_cast<int>(std::min(obs.size(), mean.size()));
+  for (int i = 0; i < n; ++i) {
     const double z = std::fabs((static_cast<double>(obs[i]) - mean[i]) / std[i]);
     if (z > worst) {
       worst = z;

@@ -64,7 +64,38 @@ Row axis_row(const Vec6& x, int i) {
   g[i] = gi * kInvMass;
   return {g, -gAx - alpha};
 }
-std::array<double, 4> margins(const Vec6& x) { return {speed_h(x), axis_h(x, 0), axis_h(x, 1), axis_h(x, 2)}; }
+// Line-of-sight cone HOCBF: h = c (e.q)^2 - |q|^2, q = r + d e, c = tan(phi)^2 + 1,
+// psi1 = h_dot + a1 h, row: psi1_dot + a2 psi1 >= 0. e is normalized as in training.
+constexpr double kAxis = 1.0 / (1.0 + 1e-12);
+double cone_c(const ModelSpec& m) {
+  const double t = std::tan(m.cone_half_angle);
+  return t * t + 1.0;
+}
+double cone_h(const ModelSpec& m, const Vec6& x) {
+  const double q[3] = {x[0] + m.cone_apex_offset * kAxis, x[1], x[2]};
+  const double eq = kAxis * q[0];
+  return cone_c(m) * (eq * eq) - (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+}
+Row cone_row(const ModelSpec& m, const Vec6& x) {
+  const double n = P::kN, c = cone_c(m);
+  const double q[3] = {x[0] + m.cone_apex_offset * kAxis, x[1], x[2]};
+  const double v[3] = {x[3], x[4], x[5]};
+  const double eq = kAxis * q[0], ev = kAxis * v[0];
+  const double grad[3] = {2.0 * c * eq * kAxis - 2.0 * q[0], -2.0 * q[1], -2.0 * q[2]};
+  const double h = c * (eq * eq) - (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+  const double h_dot = grad[0] * v[0] + grad[1] * v[1] + grad[2] * v[2];
+  const double psi1 = h_dot + kConeA1 * h;
+  const double dgrad[3] = {2.0 * c * ev * kAxis - 2.0 * v[0], -2.0 * v[1], -2.0 * v[2]};
+  const double acc[3] = {3.0 * (n * n) * x[0] + 2.0 * n * x[4], -2.0 * n * x[3], -(n * n) * x[2]};
+  const double drift = (dgrad[0] * v[0] + dgrad[1] * v[1] + dgrad[2] * v[2]) +
+                       (grad[0] * acc[0] + grad[1] * acc[1] + grad[2] * acc[2]) + kConeA1 * h_dot + kConeA2 * psi1;
+  return {{grad[0] / P::kMass, grad[1] / P::kMass, grad[2] / P::kMass}, -drift};
+}
+std::vector<double> margins(const ModelSpec& m, const Vec6& x) {
+  std::vector<double> h{speed_h(x), axis_h(x, 0), axis_h(x, 1), axis_h(x, 2)};
+  if (m.los_cone) h.push_back(cone_h(m, x));
+  return h;
+}
 
 // ---------------------------------------------------------------- QP: Euclidean projection, active-set enumeration
 bool project(const Vec3& ud, const std::vector<Row>& rows, Vec3& out) {
@@ -132,11 +163,13 @@ bool project(const Vec3& ud, const std::vector<Row>& rows, Vec3& out) {
 }
 
 // false when the rows are inconsistent
-bool cbf_filter(const Vec6& x, const Vec3& ud, const Row& extra, Vec3& u_act) {
+bool cbf_filter(const ModelSpec& model, const Vec6& x, const Vec3& ud, const Row& extra, Vec3& u_act) {
   std::vector<Row> rows = {
       {{1, 0, 0}, -P::kUMax}, {{-1, 0, 0}, -P::kUMax}, {{0, 1, 0}, -P::kUMax},
       {{0, -1, 0}, -P::kUMax}, {{0, 0, 1}, -P::kUMax}, {{0, 0, -1}, -P::kUMax},
-      speed_row(x), axis_row(x, 0), axis_row(x, 1), axis_row(x, 2), extra};
+      speed_row(x), axis_row(x, 0), axis_row(x, 1), axis_row(x, 2)};
+  if (model.los_cone) rows.push_back(cone_row(model, x));
+  rows.push_back(extra);
   Vec3 u;
   if (!project(ud, rows, u)) return false;
   for (double& v : u) v = std::clamp(v, -P::kUMax, P::kUMax);
@@ -232,9 +265,9 @@ class Guard {
            c[0] >= g.command_row.b - 1e-8 && cmax <= P::kUMax + 1e-8;
   }
 
-  Vec3 select(const Vec6& s, const Vec3& desired, const Geometry& g) {
+  Vec3 select(const ModelSpec& model, const Vec6& s, const Vec3& desired, const Geometry& g) {
     Vec3 candidate{0, 0, 0};
-    const bool solved = cbf_filter(s, desired, g.command_row, candidate);
+    const bool solved = cbf_filter(model, s, desired, g.command_row, candidate);
     const bool admissible = solved && command_certified(s, g, candidate);
     const bool release_ok = admissible && g.psi >= P::kGuardReleaseMargin && dwell_ >= P::kGuardMinimumDwell &&
                             s[3] >= -0.02;
@@ -289,36 +322,73 @@ struct Thruster {
 
 }  // namespace
 
+// ---------------------------------------------------------------- model-dependent pieces
+Obs observation(const ModelSpec& model, const Vec6& x, const History& nominal, const History& applied,
+                float intervened, float intervention) {
+  Obs o;
+  o.reserve(static_cast<size_t>(model.obs_dim));
+  for (int i = 0; i < 3; ++i) o.push_back(static_cast<float>(x[i] / P::kPosScale));
+  for (int i = 0; i < 3; ++i) o.push_back(static_cast<float>(x[3 + i] / P::kVelScale));
+  o.insert(o.end(), nominal.begin(), nominal.end());
+  o.insert(o.end(), applied.begin(), applied.end());
+  const auto mg = margins(model, x);
+  const double scale[5] = {1.0, P::kMaxVel * P::kMaxVel, P::kMaxVel * P::kMaxVel, P::kMaxVel * P::kMaxVel,
+                           kConeMarginScale};
+  for (size_t i = 0; i < mg.size(); ++i) o.push_back(static_cast<float>(mg[i] / scale[i]));
+  o.push_back(intervened);
+  o.push_back(intervention);
+  if (model.bearing) {
+    const double range = std::max(x[0], kBearingXMin);
+    o.push_back(static_cast<float>(x[1] / range));
+    o.push_back(static_cast<float>(x[2] / range));
+  }
+  if (model.action_scale_min < 1.0) o.push_back(static_cast<float>(action_scale(model, x[0])));
+  if (static_cast<int>(o.size()) != model.obs_dim) throw std::logic_error("observation layout does not match model");
+  return o;
+}
+
+double action_scale(const ModelSpec& model, double x) {
+  if (!(model.action_scale_min < 1.0)) return 1.0;
+  const double cx = model.contact_x, far = model.action_scale_far, lo = model.action_scale_min;
+  const double frac = std::min(std::max((x - cx) / (far - cx), 0.0), 1.0);
+  return lo + (1.0 - lo) * frac;
+}
+
+Contact contact_check(const ModelSpec& model, const Vec6& before, const Vec6& after) {
+  Contact c;
+  const double cx = model.contact_x;
+  if (model.docking != Docking::ContactPlane || !(before[0] > cx && cx >= after[0])) return c;
+  c.crossed = true;
+  const double t = (before[0] - cx) / (before[0] - after[0]);
+  Vec6 xc{};
+  for (int i = 0; i < 6; ++i) xc[i] = before[i] + t * (after[i] - before[i]);
+  c.at = {std::sqrt(xc[1] * xc[1] + xc[2] * xc[2]), std::sqrt(xc[4] * xc[4] + xc[5] * xc[5]), -xc[3]};
+  c.success = c.at[0] <= model.contact_lateral_max && c.at[1] <= model.contact_lateral_speed_max &&
+              model.contact_closing_min <= c.at[2] && c.at[2] <= model.contact_closing_max &&
+              after[0] >= P::kFrontBuffer - 1e-8;
+  return c;
+}
+
 // ---------------------------------------------------------------- controller
 struct Controller::Impl {
+  ModelSpec model{};
   std::unique_ptr<Policy> policy;
   VelocitySource vsrc;
   double tracking_tol;
   Guard guard;
   Thruster thruster;
   Vec6 x{};
+  Vec6 previous{};   // state used by the last completed step
   Vec3 prev_pos{};
-  std::array<float, 3 * P::kHistoryLen> nom_hist{}, app_hist{};   // oldest first, / u_max
+  History nom_hist{}, app_hist{};
   float interv_flag = 0.0f, interv_mag = 0.0f;
   double time = 0.0;
   int k = 0;
   bool running = false;
 
-  Obs build_obs() const {
-    Obs o{};
-    for (int i = 0; i < 3; ++i) o[i] = static_cast<float>(x[i] / P::kPosScale);
-    for (int i = 0; i < 3; ++i) o[3 + i] = static_cast<float>(x[3 + i] / P::kVelScale);
-    for (int i = 0; i < 12; ++i) o[6 + i] = nom_hist[i];
-    for (int i = 0; i < 12; ++i) o[18 + i] = app_hist[i];
-    const auto mg = margins(x);
-    const double scale[4] = {1.0, P::kMaxVel * P::kMaxVel, P::kMaxVel * P::kMaxVel, P::kMaxVel * P::kMaxVel};
-    for (int i = 0; i < 4; ++i) o[30 + i] = static_cast<float>(mg[i] / scale[i]);
-    o[34] = interv_flag;
-    o[35] = interv_mag;
-    return o;
-  }
+  Obs build_obs() const { return observation(model, x, nom_hist, app_hist, interv_flag, interv_mag); }
 
-  static void push(std::array<float, 3 * P::kHistoryLen>& h, const Vec3& v) {
+  static void push(History& h, const Vec3& v) {
     for (int i = 0; i < 3 * (P::kHistoryLen - 1); ++i) h[i] = h[i + 3];
     for (int i = 0; i < 3; ++i) h[3 * (P::kHistoryLen - 1) + i] = static_cast<float>(v[i] / P::kUMax);
   }
@@ -338,14 +408,16 @@ struct Controller::Impl {
   }
 };
 
-Controller::Controller(std::unique_ptr<Policy> policy, ActuatorEmulation actuator, VelocitySource velocity_source,
-                       double tracking_tol_m)
+Controller::Controller(const ModelSpec& model, std::unique_ptr<Policy> policy, ActuatorEmulation actuator,
+                       VelocitySource velocity_source, double tracking_tol_m)
     : impl_(std::make_unique<Impl>()) {
   if (!policy) throw std::invalid_argument("policy is null");
+  if (policy->input_dim() != model.obs_dim) throw std::invalid_argument("policy input does not match the model");
   const auto& a = actuator;
   bool ok = a.tau >= P::kTauMin && a.tau <= P::kTauMax && a.deadzone >= P::kDeadzoneMin && a.deadzone <= P::kDeadzoneMax;
   for (double s : a.scale) ok = ok && s >= P::kScaleMin && s <= P::kScaleMax;
   if (!ok) throw std::invalid_argument("actuator emulation outside the box the safety guard is certified for");
+  impl_->model = model;
   impl_->policy = std::move(policy);
   impl_->thruster.p = actuator;
   impl_->vsrc = velocity_source;
@@ -356,6 +428,7 @@ Controller::~Controller() = default;
 bool Controller::running() const { return impl_->running; }
 const Vec6& Controller::predicted_state() const { return impl_->x; }
 const Policy& Controller::policy() const { return *impl_->policy; }
+const ModelSpec& Controller::model() const { return impl_->model; }
 
 void Controller::reset(const Vec6& state0) {
   for (double v : state0) if (!std::isfinite(v)) throw std::invalid_argument("non-finite initial state");
@@ -368,6 +441,7 @@ void Controller::reset(const Vec6& state0) {
   m.interv_mag = 0.0f;
   m.time = 0.0;
   m.x = state0;
+  m.previous = state0;
   m.prev_pos = {state0[0], state0[1], state0[2]};
   m.k = 0;
   m.running = true;
@@ -395,7 +469,23 @@ StepResult Controller::step(const Vec3& pos, const Vec3* vel_meas) {
   m.x = s;
   m.prev_pos = pos;
   const double dist = norm3(pos[0], pos[1], pos[2]), speed = norm3(vel[0], vel[1], vel[2]);
-  if (dist <= P::kDockRadius && speed <= P::kDockSpeed && pos[0] >= P::kFrontBuffer - 1e-8) {
+  if (m.model.docking == Docking::ContactPlane) {
+    const Contact c = m.k > 0 ? contact_check(m.model, m.previous, s) : Contact{};
+    if (c.crossed) {
+      m.running = false;
+      StepResult r;
+      r.status = c.success ? Status::Docked : Status::Abort;
+      r.reason = c.success ? "CONTACT" : "CONTACT_FAIL";
+      r.k = m.k;
+      r.t = m.time;
+      r.state = s;
+      r.next_state = s;
+      r.dist = dist;
+      r.speed = speed;
+      r.contact = c.at;
+      return r;
+    }
+  } else if (dist <= P::kDockRadius && speed <= P::kDockSpeed && pos[0] >= P::kFrontBuffer - 1e-8) {
     m.running = false;
     StepResult r;
     r.status = Status::Docked;
@@ -420,11 +510,12 @@ StepResult Controller::step(const Vec3& pos, const Vec3* vel_meas) {
   try {
     r.obs = m.build_obs();
     r.action = m.policy->act(r.obs);
+    const double authority = P::kUMax * action_scale(m.model, s[0]);
     const Vec3 prev_real = m.thruster.u_prev;
     const Geometry geo = m.guard.geometry(s, prev_real);
     for (int i = 0; i < 3; ++i)
-      r.u_des[i] = std::clamp(static_cast<double>(r.action[i]) * P::kUMax, -P::kUMax, P::kUMax);
-    r.u_act = m.guard.select(s, r.u_des, geo);
+      r.u_des[i] = std::clamp(static_cast<double>(r.action[i]) * authority, -P::kUMax, P::kUMax);
+    r.u_act = m.guard.select(m.model, s, r.u_des, geo);
     r.backup_active = m.guard.active();
     const double imag = norm3(r.u_act[0] - r.u_des[0], r.u_act[1] - r.u_des[1], r.u_act[2] - r.u_des[2]);
     r.intervened = imag > P::kInterveneTol;
@@ -441,11 +532,12 @@ StepResult Controller::step(const Vec3& pos, const Vec3* vel_meas) {
     m.interv_flag = r.intervened ? 1.0f : 0.0f;
     m.interv_mag = static_cast<float>(imag);
     m.x = r.next_state;
-    const auto mg = margins(r.next_state);
+    const auto mg = margins(m.model, r.next_state);
     r.min_margin = *std::min_element(mg.begin(), mg.end());
   } catch (const std::exception&) {
     return m.abort("CONTROLLER_ERROR", &s);
   }
+  m.previous = s;
   ++m.k;
   return r;
 }
