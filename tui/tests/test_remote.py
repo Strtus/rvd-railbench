@@ -1,4 +1,5 @@
 import copy
+import csv
 import io
 import json
 import subprocess
@@ -22,21 +23,44 @@ from rvdlab.app import RvdLabApp  # noqa: E402
 from rvdlab.config import MODEL_ID  # noqa: E402
 from rvdlab.project import find_build  # noqa: E402
 from rvdlab.remote import (  # noqa: E402
-    REMOTE_TIMING, SPEED_FLOOR, Bridge, SimAxis, connect, connection_path, move, remote_override,
+    REMOTE_TIMING, SPEED_FLOOR, Bridge, SensorLog, SimAxis, connect, connection_path, move, remote_override,
 )
 
 START = (18.0, 0.03, -0.02)
 
 
+class FakeMocap:
+    host, port = "127.0.0.1", 3883
+    trackers = {"Chaser": {"to_rail": {}}, "Target": {}}
+
+    def start(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def state(self) -> dict:
+        chaser = {"valid": True, "reason": None, "age_s": 0.01, "received": 5.0, "source_time": 100.0, "frames": 3,
+                  "position_raw": [1.0, 2.0, 3.0], "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0],
+                  "rail": {"x": 18.0, "y": 0.03, "z": -0.02}}
+        return {"trackers": {"Chaser": chaser, "Target": {"valid": False, "reason": "no pose received"}}}
+
+
 @pytest.fixture
-def node(tmp_path: Path, monkeypatch):
+def node(tmp_path: Path, monkeypatch, request):
     # These integration tests exercise the UI and node, not real-time scheduling.
     # The C++ safety_time_test covers the production timestamp uncertainty bound.
     monkeypatch.setitem(REMOTE_TIMING, "clock_skew_s", 0.5)
+    acquire_bridge = Bridge.acquire
+
+    def acquire(bridge, period_s=1.0, timeout_s=3.0):
+        return acquire_bridge(bridge, period_s=period_s, timeout_s=timeout_s)
+
+    monkeypatch.setattr(Bridge, "acquire", acquire)
     profile = copy.deepcopy(SIMULATOR)
     for axis, value in zip("xyz", START):
         profile["axes"][axis]["start"] = value
-    rail = Node(SimBackend(validate(profile), True), Settings(poll_s=0.05))
+    rail = Node(SimBackend(validate(profile), True), Settings(poll_s=0.05), mocap=getattr(request, "param", None))
     (tmp_path / "users.json").write_text(json.dumps({"alice": "a" * 40}))
     server = NodeServer(("127.0.0.1", 0), rail, UserStore(tmp_path / "users.json"))
     rail.start()
@@ -70,6 +94,100 @@ def test_the_bridge_reads_commands_and_holds(node):
     assert bridge.answer(["HOLD"]) == "OK"
     assert rail.snapshot()["control"] is None
     bridge.close()
+
+
+@pytest.mark.parametrize("node", [FakeMocap()], indirect=True)
+def test_each_read_logs_the_encoders_and_mocap_poses(node, tmp_path):
+    connection, _ = node
+    bridge = Bridge(connect(connection))
+    bridge.acquire()
+    bridge.record(tmp_path / "sensors.csv")
+    frames = [pos(bridge.answer(["READ"]))[8] for _ in range(2)]
+    bridge.close()
+    with (tmp_path / "sensors.csv").open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert [float(r["frame_id"]) for r in rows] == frames
+    row = rows[0]
+    assert [float(row[f"enc_{a}"]) for a in "xyz"] == pytest.approx(START)
+    assert float(row["t_encoder"]) <= float(row["t_node"])
+    assert row["Chaser_valid"] == "1" and float(row["Chaser_t_source"]) == 100.0
+    assert [float(row[f"Chaser_{f}"]) for f in ("px", "py", "pz", "qw", "rail_x")] == [1, 2, 3, 1, 18]
+    assert row["Target_valid"] == "0" and row["Target_px"] == "" and row["Target_rail_x"] == ""
+    assert row["Target_reason"] == "no pose received" and row["Chaser_frames"] == "3"
+
+
+@pytest.mark.parametrize("node", [FakeMocap()], indirect=True)
+def test_stale_and_unmapped_mocap_keeps_the_encoder_log(node, tmp_path, monkeypatch):
+    connection, rail = node
+    state = rail.mocap.state()
+    pose = state["trackers"]["Chaser"]
+    pose.update(valid=False, reason="disconnected", age_s=2.0)
+    pose.pop("rail")
+    monkeypatch.setattr(rail.mocap, "state", lambda: state)
+    bridge = Bridge(connect(connection))
+    bridge.acquire()
+    bridge.record(tmp_path / "sensors.csv")
+    pos(bridge.answer(["READ"]))
+    bridge.close()
+    with (tmp_path / "sensors.csv").open(newline="") as stream:
+        row, = csv.DictReader(stream)
+    assert [float(row[f"enc_{a}"]) for a in "xyz"] == pytest.approx(START)
+    assert row["Chaser_valid"] == "0" and row["Chaser_reason"] == "disconnected"
+    assert float(row["Chaser_age_s"]) == 2.0 and float(row["Chaser_px"]) == 1.0
+    assert all(row[f"Chaser_rail_{a}"] == "" for a in "xyz")
+
+
+@pytest.mark.parametrize("node", [FakeMocap()], indirect=True)
+def test_sensor_write_failure_preserves_samples_and_does_not_stop_control(node, tmp_path, monkeypatch):
+    connection, rail = node
+    messages = []
+    bridge = Bridge(connect(connection), log=messages.append)
+    bridge.acquire()
+    path = tmp_path / "sensors.csv"
+    bridge.record(path)
+    pos(bridge.answer(["READ"]))
+    recorded = path.read_bytes()
+
+    def full_disk(self, state):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(SensorLog, "write", full_disk)
+    assert pos(bridge.answer(["READ"]))[-1] == 0
+    assert pos(bridge.answer(["READ"]))[-1] == 0
+    assert rail.snapshot()["control"] is not None
+    assert messages == ["sensor log stopped: disk full"]
+    bridge.close()
+    assert path.read_bytes() == recorded
+
+
+@pytest.mark.parametrize("node", [FakeMocap()], indirect=True)
+def test_closing_during_a_read_does_not_reopen_or_truncate_the_log(node, tmp_path, monkeypatch):
+    connection, _ = node
+    bridge = Bridge(connect(connection))
+    bridge.acquire()
+    path = tmp_path / "sensors.csv"
+    bridge.record(path)
+    pos(bridge.answer(["READ"]))
+    recorded = path.read_bytes()
+    state = bridge.node.state(fresh=True)
+
+    def close_before_reply(fresh=False):
+        bridge.close()
+        return state
+
+    monkeypatch.setattr(bridge.node, "state", close_before_reply)
+    assert pos(bridge.answer(["READ"]))[-1] == 1
+    assert path.read_bytes() == recorded
+
+
+def test_a_node_without_mocap_writes_no_sensor_log(node, tmp_path):
+    connection, _ = node
+    bridge = Bridge(connect(connection))
+    bridge.acquire()
+    bridge.record(tmp_path / "sensors.csv")
+    pos(bridge.answer(["READ"]))
+    bridge.close()
+    assert not (tmp_path / "sensors.csv").exists()
 
 
 def test_a_simulated_axis_runs_at_the_commanded_speed_and_stops_at_the_target():
@@ -125,10 +243,12 @@ def test_move_runs_one_waypoint_and_releases(node):
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
+@pytest.mark.parametrize("node", [FakeMocap()], indirect=True)
 def test_rail_main_runs_through_the_bridge(node, tmp_path):
     connection, rail = node
     bridge = Bridge(connect(connection))
     bridge.acquire()
+    bridge.record(tmp_path / "run" / "sensors.csv")
     bridge.start()
     override = tmp_path / "remote.ini"
     override.write_text(remote_override(3))
@@ -144,6 +264,27 @@ def test_rail_main_runs_through_the_bridge(node, tmp_path):
     assert json.loads((tmp_path / "run" / "metadata.json").read_text())["hardware"] is True
     state = rail.snapshot()
     assert state["control"] is None and state["position"]["x"] != pytest.approx(START[0], abs=1e-6)
+    samples, trajectory = assert_sensor_alignment(tmp_path / "run")
+    assert len(samples) == 4  # initialization plus three control reads
+    assert len(trajectory) == 4
+    assert trajectory[-1]["reason"] == "MAX_STEPS" and trajectory[-1]["frame_id"] == "-1"
+
+
+def assert_sensor_alignment(directory):
+    with (directory / "sensors.csv").open(newline="", encoding="utf-8") as stream:
+        samples = list(csv.DictReader(stream))
+    with (directory / "trajectory.csv").open(newline="", encoding="utf-8") as stream:
+        trajectory = list(csv.DictReader(stream))
+    logged = {row["frame_id"]: row for row in samples}
+    measured = [row for row in trajectory if int(row["frame_id"]) >= 0]
+    assert samples and measured
+    assert all(int(row["frame_id"]) >= 0 and None not in row and None not in row.values() for row in samples)
+    for row in measured:
+        sample = logged[row["frame_id"]]
+        for axis in "xyz":
+            assert float(sample[f"enc_{axis}"]) == pytest.approx(float(row[f"enc_{axis}"]), abs=1e-6)
+    assert all(row["Chaser_valid"] == "1" and row["Chaser_qw"] == "1.0" for row in samples)
+    return samples, trajectory
 
 
 def test_connection_lookup(tmp_path, monkeypatch):
@@ -257,6 +398,7 @@ async def test_rendezvous_offers_the_node_and_stops_the_rail(node, tmp_path, pro
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
+@pytest.mark.parametrize("node", [None, FakeMocap()], indirect=True)
 async def test_a_run_on_the_node_ends_with_the_rail_released(node, tmp_path, profiles):
     connection, rail = node
     app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)
@@ -274,6 +416,11 @@ async def test_a_run_on_the_node_ends_with_the_rail_released(node, tmp_path, pro
         assert screen.outcome[0] == "LIMIT_REACHED", screen.outcome
         assert rail.snapshot()["control"] is None and screen.bridge is None
         assert not app.has_class("rail-control-active")
+        if rail.mocap is not None:
+            samples, _ = assert_sensor_alignment(screen.experiment)
+            assert len(samples) == 3
+        else:
+            assert not (screen.experiment / "sensors.csv").exists()
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
@@ -301,6 +448,7 @@ async def test_a_run_with_z_simulated_leaves_the_rail_z_alone(node, tmp_path, pr
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
+@pytest.mark.parametrize("node", [FakeMocap()], indirect=True)
 async def test_stopping_a_node_run_clears_the_control_border(node, tmp_path, profiles):
     connection, rail = node
     app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)
@@ -312,11 +460,13 @@ async def test_stopping_a_node_run_clears_the_control_border(node, tmp_path, pro
         await pilot.press("f5")
         await confirm(pilot, app)
         await settle(pilot, lambda: app.has_class("rail-control-active") and screen.process is not None)
+        await settle(pilot, lambda: screen.last_row is not None)
         await pilot.press("f6")
         await settle(pilot, lambda: screen.outcome is not None)
         assert screen.outcome[0] == "INTERRUPTED"
         assert rail.snapshot()["control"] is None and screen.bridge is None
         assert not app.has_class("rail-control-active")
+        assert_sensor_alignment(screen.experiment)
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")

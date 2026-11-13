@@ -340,6 +340,7 @@ class RendezvousScreen(Page):
             stream.write(remote_override(steps))
         override = Path(name)
         args = simulation_command(p, override, directory) + ["--bridge", str(bridge.port)]
+        bridge.record(directory / "sensors.csv")
         p.experiments_dir.mkdir(parents=True, exist_ok=True)
         self.bridge = bridge
         self.reset(directory)
