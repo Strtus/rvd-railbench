@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import math
 import os
 import socket
@@ -114,10 +115,51 @@ def park(node: Any, cancel: threading.Event, progress: Callable[[dict[str, Any]]
     return f"{job.get('status', 'lost')}: {job.get('reason') or state.get('fault') or state.get('reason')}"
 
 
+TRACKER_FIELDS = ("valid", "age_s", "t_received", "t_source", "px", "py", "pz", "qx", "qy", "qz", "qw",
+                  "rail_x", "rail_y", "rail_z", "reason", "frames")
+
+
+class SensorLog:
+    """One row per READ: the node's encoder sample and each mocap tracker's latest pose, joined to
+    trajectory.csv by frame_id. t_* except t_source are on the node clock; t_source is the mocap clock."""
+
+    def __init__(self, path: Path, trackers: list[str]) -> None:
+        self.trackers = trackers
+        self.stream = path.open("w", encoding="utf-8", newline="")
+        try:
+            self.writer = csv.writer(self.stream)
+            self.writer.writerow(["frame_id", "t_node", "t_encoder", "enc_x", "enc_y", "enc_z"]
+                                 + [f"{name}_{field}" for name in trackers for field in TRACKER_FIELDS])
+            self.stream.flush()
+        except Exception:
+            self.stream.close()
+            raise
+
+    def write(self, state: dict[str, Any]) -> None:
+        encoders = state["sensors"]["encoders"]
+        poses = (state["sensors"].get("mocap") or {}).get("trackers", {})
+        row = [encoders["seq"], state["server_time"], encoders["sample_time"], *(encoders["values"][a] for a in AXES)]
+        for name in self.trackers:
+            pose = poses.get(name) or {}
+            if "position_raw" not in pose:
+                row += [0] + [None] * (len(TRACKER_FIELDS) - 3) + [pose.get("reason"), pose.get("frames")]
+                continue
+            rail = pose.get("rail") or {}
+            row += [int(pose["valid"]), pose["age_s"], pose["received"], pose["source_time"],
+                    *pose["position_raw"], *pose["quaternion_xyzw"], *(rail.get(a) for a in AXES),
+                    pose.get("reason"), pose.get("frames")]
+        self.writer.writerow(row)
+        self.stream.flush()
+
+    def close(self) -> None:
+        self.stream.close()
+
+
 class Bridge:
     """Holds a stream lease on x, y, z and answers rail_main's READ / SEND / HOLD lines (see bridge.hpp).
 
-    Axes named in simulated stay where they are on the rail; the bridge integrates them itself instead."""
+    Axes named in simulated stay where they are on the rail; the bridge integrates them itself instead.
+    With record() and a node that has mocap, each READ also appends a row to a SensorLog."""
 
     def __init__(self, node: Any, log: Callable[[str], None] = lambda _: None, simulated: tuple[str, ...] = (),
                  on_fault: Callable[[], None] = lambda: None) -> None:
@@ -133,6 +175,10 @@ class Bridge:
         self.listener = socket.create_server(("127.0.0.1", 0))
         self.port = self.listener.getsockname()[1]
         self.axes: dict[str, Any] = {}
+        self.trackers: list[str] = []
+        self.sensor_path: Path | None = None
+        self.sensor_log: SensorLog | None = None
+        self._sensor_lock = threading.RLock()
         self._released = threading.Lock()
         self._thread = threading.Thread(target=self._serve, name="rvdlab-bridge", daemon=True)
 
@@ -144,6 +190,7 @@ class Bridge:
         if frozen:
             raise RemoteError(f"the node does not move {', '.join(frozen)}")
         self.axes = caps["axes"]
+        self.trackers = list((caps.get("mocap") or {}).get("trackers", []))
         self.floor = {a: max(SPEED_FLOOR * self.axes[a]["max_speed"], self.axes[a]["min_speed"]) for a in self.real}
         if self.simulated:
             here, now = self.node.state(fresh=True)["position"], time.monotonic()
@@ -155,6 +202,12 @@ class Bridge:
                 "simulated_start": {a: s.position for a, s in self.sim.items()} if self.sim else {},
                 "simulated_model": "commanded speed, stops at the target" if self.sim else None,
                 "speed_floor_m_s": self.floor}
+
+    def record(self, path: Path) -> None:
+        """Opens the sensor log on the first READ, when rail_main has created the experiment directory."""
+        with self._sensor_lock:
+            if self.trackers and not self.stop_event.is_set():
+                self.sensor_path = path
 
     def start(self) -> None:
         self._thread.start()
@@ -170,6 +223,7 @@ class Bridge:
 
     def close(self) -> None:
         self.stop_event.set()
+        self._close_log()
         try:
             self.listener.close()
         except OSError:
@@ -177,6 +231,32 @@ class Bridge:
         if self._thread.is_alive():
             self._thread.join(5)
         self._release()
+        self._close_log()
+
+    def _record(self, state: dict[str, Any]) -> None:
+        error = None
+        with self._sensor_lock:
+            if self.sensor_path is None:
+                return
+            try:
+                if self.sensor_log is None:
+                    self.sensor_log = SensorLog(self.sensor_path, self.trackers)
+                self.sensor_log.write(state)
+            except Exception as exc:  # logging must never stop a run
+                error = f"sensor log stopped: {exc}"
+                self._close_log()
+        if error is not None:
+            self.log(error)
+
+    def _close_log(self) -> None:
+        with self._sensor_lock:
+            self.sensor_path = None
+            log, self.sensor_log = self.sensor_log, None
+            if log is not None:
+                try:
+                    log.close()
+                except OSError:
+                    pass
 
     def _release(self) -> None:
         with self._released:
@@ -204,6 +284,7 @@ class Bridge:
             pass
         finally:
             self._release()
+            self._close_log()
             self.finished.set()
 
     def answer(self, words: list[str]) -> str:
@@ -229,6 +310,7 @@ class Bridge:
         if not encoders["ok"] or encoders["sample_time"] is None:
             self.on_fault()
             return f"ERR encoders: {encoders['error']}"
+        self._record(state)
         stop = self.stop_event.is_set() or state["control"] is None or bool(state["fault"])
         if state["fault"] or (stop and not self.stop_event.is_set()):
             self.on_fault()
