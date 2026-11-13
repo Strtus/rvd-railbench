@@ -166,6 +166,55 @@ def test_a_stuck_axis_faults_the_node(make_node):
         stream(node)
 
 
+LAB = dict(poll_s=0.2, stall_timeout_s=3.0, lease_ttl_s=3.0, max_timeout_s=3.0, max_period_s=2.0, horizon_s=3.0,
+           task_lead_s=2.0, task_refresh_s=1.0, max_sample_age_s=1.0)
+
+
+def scripted_z(make_node, monkeypatch, z):
+    from conftest import sim_profile
+
+    profile = sim_profile(z={"minimum": 0.0, "maximum": 0.58, "max_speed": 0.02, "acceleration": 1.0,
+                             "tolerance": 0.0003, "resolution": 2e-06, "start": z})
+    node = make_node(profile=profile, **LAB)
+    now = [node.clock()]
+    monkeypatch.setattr(node, "clock", lambda: now[0])
+    monkeypatch.setattr(node.backend, "_clock", lambda: now[0])
+    node.backend.stuck.add("z")  # the test moves z itself
+    return node, now
+
+
+def test_a_lagging_axis_sent_back_and_forth_is_not_stalled(make_node, monkeypatch):
+    # Z on the lab rail: 1 s setpoints alternately 0.5 mm below and 0.2 mm above it, each taken up late.
+    measured = [35.110, 35.008, 35.004, 34.988, 34.342, 34.212, 34.060, 33.806, 33.764, 33.562, 33.558]
+    targets = [35.421, 34.485, 35.033, 34.139, 34.553, 33.656, 34.223, 33.318, 33.944, 33.078, 33.743]
+    node, now = scripted_z(make_node, monkeypatch, measured[0] / 1000)
+    lease = stream(node, axes=["z"], timeout_s=1.5)
+    for k, target in enumerate(targets):
+        setpoint(node, lease, k + 1, {"z": target / 1000}, 0.002, valid_for=1.5)
+        for i in range(5):
+            now[0] += 0.2
+            if i == 2 and k + 1 < len(measured):
+                node.backend.position["z"] = measured[k + 1] / 1000
+            assert node.snapshot(fresh=True)["fault"] is None
+
+
+def test_an_axis_that_ignores_its_setpoints_still_stalls(make_node, monkeypatch):
+    node, now = scripted_z(make_node, monkeypatch, 0.034)
+    lease = stream(node, axes=["z"], timeout_s=1.5)
+    begin, state = now[0], None
+    for k in range(6):
+        setpoint(node, lease, k + 1, {"z": 0.0335 - 0.0001 * k}, 0.002, valid_for=1.5)
+        for _ in range(5):
+            now[0] += 0.2
+            state = node.snapshot(fresh=True)
+            if state["fault"]:
+                break
+        if state["fault"]:
+            break
+    assert state["fault"].startswith("MOTION_STALLED: z")
+    assert 3.0 < now[0] - begin <= 3.4
+
+
 def test_lost_feedback_while_moving_faults_and_stops(make_node):
     node = make_node()
     lease = task(node, [{"position": {"x": 5.0}, "speed": 1.0}], axes=["x"])
