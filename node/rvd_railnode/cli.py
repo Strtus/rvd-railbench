@@ -10,7 +10,9 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
+import sysconfig
 import time
 from datetime import datetime, timedelta, timezone
 from importlib import metadata
@@ -30,6 +32,7 @@ LOCAL_USER = "local"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}")
 STARTUP_FILE = "rail-node.cmd"
 PYPI_PACKAGE = "rvd-railbench"
+SERVE_LINE = re.compile(r'-m rvd_railnode serve --config "([^"]+)"')
 
 
 class CliError(Exception):
@@ -403,6 +406,86 @@ def _batch_quote(path: Path | str) -> str:
     return '"' + str(path).replace("%", "%%") + '"'
 
 
+def _path_with(value: str, folder: Path) -> str | None:
+    """PATH with folder appended, or None if it is already listed."""
+    wanted = os.path.normcase(os.path.normpath(folder))
+    entries = [entry for entry in value.split(os.pathsep) if entry.strip()]
+    if any(os.path.normcase(os.path.normpath(os.path.expandvars(entry))) == wanted for entry in entries):
+        return None
+    return os.pathsep.join([*entries, str(folder)])
+
+
+def _ensure_on_path(folder: Path, key: str = "Environment") -> bool:
+    import winreg
+
+    try:
+        system = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, system) as handle:
+            if _path_with(winreg.QueryValueEx(handle, "Path")[0], folder) is None:
+                return False
+    except OSError:
+        pass
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_READ | winreg.KEY_WRITE) as handle:
+        try:
+            value, kind = winreg.QueryValueEx(handle, "Path")
+        except FileNotFoundError:
+            value, kind = "", winreg.REG_EXPAND_SZ
+        updated = _path_with(value, folder)
+        if updated is None:
+            return False
+        winreg.SetValueEx(handle, "Path", 0, winreg.REG_SZ if kind == winreg.REG_SZ else winreg.REG_EXPAND_SZ,
+                          updated)
+    if key == "Environment":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 0x2, 2000, None)
+        except Exception:
+            pass  # new terminals opened after the next log-on still see it
+    return True
+
+
+def _launched_config(launcher: Path) -> Path:
+    match = SERVE_LINE.search(launcher.read_text(encoding="utf-8"))
+    if not match:
+        raise CliError(f"{launcher} does not start a node; run rail-node autostart again")
+    return Path(match.group(1).replace("%%", "%"))
+
+
+def _running(config_path: Path) -> str | None:
+    try:
+        config = load_config(config_path)
+        client = NodeClient.from_connection(config.directory / "access" / LOCAL_USER / "connection.json")
+        return str(client.capabilities()["version"])
+    except (NodeError, ValueError, OSError, KeyError):
+        return None
+
+
+def _open_window(launcher: Path) -> None:
+    subprocess.Popen(["cmd.exe", "/c", str(launcher)], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+
+
+def _start(launcher: Path) -> int:
+    version = _running(_launched_config(launcher))
+    if version:
+        print(f"rail-node {version} is already running")
+    else:
+        _open_window(launcher)
+        print("the node is starting in its own window")
+    return 0
+
+
+def start_saved() -> int:
+    try:
+        launcher: Path | None = _startup_folder() / STARTUP_FILE
+    except CliError:
+        launcher = None
+    if launcher is None or not launcher.exists():
+        raise CliError("choose a command (rail-node --help), or run 'rail-node autostart --config node.json' "
+                       "once so that 'rail-node' alone starts the node")
+    return _start(launcher)
+
+
 def autostart(args: argparse.Namespace) -> int:
     path = _startup_folder() / STARTUP_FILE
     if args.remove:
@@ -434,14 +517,19 @@ def autostart(args: argparse.Namespace) -> int:
     if not args.no_update:
         print(f"update     pip install --upgrade \"{PYPI_PACKAGE}[node]\" (if it fails, the node starts anyway)")
     print(f"then       rail-node serve --config {config}{flags}")
+    scripts = Path(sysconfig.get_path("scripts"))
+    if _ensure_on_path(scripts):
+        print(f"path       added {scripts}; open a new terminal and 'rail-node' alone starts the node")
+    else:
+        print("start      'rail-node' alone starts the node")
     print("undo       rail-node autostart --remove")
-    return 0
+    return _start(path)
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="rail-node", description=__doc__)
     root.add_argument("--version", action="version", version=f"rail-node {__version__}")
-    sub = root.add_subparsers(dest="command", required=True)
+    sub = root.add_subparsers(dest="command")
     p = sub.add_parser("init", help="create the node configuration, TLS identity and user access folders")
     p.add_argument("--directory", type=Path, default=Path("rail-node"))
     p.add_argument("--address", required=True, help="IP address or DNS name other computers use for this node")
@@ -457,7 +545,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, required=True)
     p.add_argument("--allow-motion", action="store_true", help="accept motion commands (default: read-only)")
     p.set_defaults(run=serve)
-    p = sub.add_parser("autostart", help="at every Windows log-on, update from PyPI and then serve")
+    p = sub.add_parser("autostart", help="start the node now, at every Windows log-on and with 'rail-node' alone; "
+                                         "each start first updates it from PyPI")
     p.add_argument("--config", type=Path, help="node.json to serve")
     p.add_argument("--allow-motion", action="store_true", help="accept motion commands (default: read-only)")
     p.add_argument("--no-update", action="store_true", help="start without updating from PyPI first")
@@ -492,7 +581,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        return args.run(args)
+        return start_saved() if args.command is None else args.run(args)
     except KeyboardInterrupt:
         return 130
     except (CliError, ProfileError, NodeError, BackendError, ValueError, OSError) as exc:
