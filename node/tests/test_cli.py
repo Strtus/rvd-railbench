@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import socket
 import sys
+import sysconfig
 import threading
 from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import ROOT, sim_profile, wait_for
@@ -173,17 +177,21 @@ def test_a_broken_profile_is_reported_plainly(tmp_path, capsys):
 
 
 @pytest.fixture
-def startup(tmp_path, monkeypatch):
-    folder = tmp_path / "Startup"
-    monkeypatch.setattr(cli, "_startup_folder", lambda: folder)
+def machine(tmp_path, monkeypatch):
+    """A Windows log-on without touching this computer: Startup folder, user PATH and console windows."""
+    state = SimpleNamespace(launcher=tmp_path / "Startup" / "rail-node.cmd", path=[], windows=[], running=None)
+    monkeypatch.setattr(cli, "_startup_folder", lambda: state.launcher.parent)
     monkeypatch.setattr(cli, "_installed_from", lambda: ["rvd-railbench"])
-    return folder / "rail-node.cmd"
+    monkeypatch.setattr(cli, "_ensure_on_path", lambda folder: state.path.append(folder) or True)
+    monkeypatch.setattr(cli, "_open_window", state.windows.append)
+    monkeypatch.setattr(cli, "_running", lambda config: state.running)
+    return state
 
 
-def test_autostart_updates_from_pypi_and_then_serves(initialized, startup, capsys):
+def test_autostart_updates_from_pypi_then_serves_and_starts_now(initialized, machine, capsys):
     root, _ = initialized
     assert main(["autostart", "--config", str(root / "node.json"), "--allow-motion"]) == 0
-    raw = startup.read_bytes()
+    raw = machine.launcher.read_bytes()
     assert raw.count(b"\r\n") == raw.count(b"\n") == raw.count(b"\r") == 6
     lines = raw.decode("utf-8").splitlines()
     python = f'"{sys.executable}"'
@@ -191,25 +199,79 @@ def test_autostart_updates_from_pypi_and_then_serves(initialized, startup, capsy
     assert lines[3] == (f"{python} -m pip install --upgrade --quiet --disable-pip-version-check --timeout 15 "
                         '--retries 1 "rvd-railbench[node]"')
     assert lines[4] == f'{python} -m rvd_railnode serve --config "{(root / "node.json").resolve()}" --allow-motion'
-    assert "rail-node autostart --remove" in capsys.readouterr().out
+    assert machine.path == [Path(sysconfig.get_path("scripts"))] and machine.windows == [machine.launcher]
+    out = capsys.readouterr().out
+    assert "rail-node autostart --remove" in out and "starting in its own window" in out
 
 
-def test_autostart_does_not_update_a_node_installed_another_way(initialized, startup, monkeypatch, capsys):
+def test_autostart_does_not_update_a_node_installed_another_way(initialized, machine, monkeypatch, capsys):
     root, _ = initialized
     monkeypatch.setattr(cli, "_installed_from", lambda: ["rvd-railnode"])
     assert main(["autostart", "--config", str(root / "node.json")]) == 2
-    assert "pip uninstall rvd-railnode" in capsys.readouterr().err and not startup.exists()
+    assert "pip uninstall rvd-railnode" in capsys.readouterr().err and not machine.launcher.exists()
     assert main(["autostart", "--config", str(root / "node.json"), "--no-update"]) == 0
-    lines = startup.read_text(encoding="utf-8").splitlines()
+    lines = machine.launcher.read_text(encoding="utf-8").splitlines()
     assert not any(" -m pip " in line for line in lines) and lines[-2].endswith('node.json"')
 
 
-def test_autostart_can_be_removed(initialized, startup, capsys):
+def test_autostart_can_be_removed(initialized, machine, capsys):
     root, _ = initialized
     assert main(["autostart", "--config", str(root / "node.json")]) == 0
-    assert main(["autostart", "--remove"]) == 0 and not startup.exists()
+    assert main(["autostart", "--remove"]) == 0 and not machine.launcher.exists()
     assert main(["autostart", "--remove"]) == 0
     assert "not set up" in capsys.readouterr().out
+
+
+def test_rail_node_alone_starts_the_node_unless_it_runs(initialized, machine, capsys):
+    root, _ = initialized
+    assert main([]) == 2
+    assert "rail-node autostart" in capsys.readouterr().err and not machine.windows
+    assert main(["autostart", "--config", str(root / "node.json"), "--allow-motion"]) == 0
+    machine.running = "9.9.9"
+    assert main([]) == 0
+    assert "9.9.9 is already running" in capsys.readouterr().out and len(machine.windows) == 1
+    machine.running = None
+    assert main([]) == 0 and machine.windows == [machine.launcher] * 2
+
+
+def test_running_asks_the_node_on_this_computer(initialized):
+    with running(initialized[0]) as (config_path, _):
+        assert cli._running(config_path) == rvd_railnode.__version__
+    assert cli._running(config_path) is None
+
+
+def test_the_launcher_tells_which_config_it_serves(tmp_path):
+    launcher = tmp_path / "rail-node.cmd"
+    launcher.write_text('"python.exe" -m rvd_railnode serve --config "C:\\lab 100%%\\node.json" --allow-motion\n',
+                        encoding="utf-8")
+    assert cli._launched_config(launcher) == Path("C:\\lab 100%\\node.json")
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    with pytest.raises(cli.CliError):
+        cli._launched_config(launcher)
+
+
+def test_the_scripts_folder_joins_path_once(tmp_path, monkeypatch):
+    folder, other = tmp_path / "venv" / "Scripts", str(tmp_path / "bin")
+    assert cli._path_with("", folder) == str(folder)
+    assert cli._path_with(other + os.pathsep, folder) == os.pathsep.join([other, str(folder)])
+    assert cli._path_with(os.pathsep.join([other, str(folder) + os.sep]), folder) is None
+    monkeypatch.setenv("RVD_TEST_ROOT", str(tmp_path))
+    variable = "%RVD_TEST_ROOT%" if os.name == "nt" else "$RVD_TEST_ROOT"
+    assert cli._path_with(os.path.join(variable, "venv", "Scripts"), folder) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the user PATH lives in the Windows registry")
+def test_the_user_path_is_kept_in_the_registry(tmp_path):
+    import winreg
+
+    key = rf"Software\rvd-railnode-test-{tmp_path.name}"
+    try:
+        assert cli._ensure_on_path(tmp_path, key) is True
+        assert cli._ensure_on_path(tmp_path, key) is False
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            assert winreg.QueryValueEx(handle, "Path") == (str(tmp_path), winreg.REG_EXPAND_SZ)
+    finally:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
 
 
 def test_autostart_needs_the_windows_startup_folder(monkeypatch, capsys):
