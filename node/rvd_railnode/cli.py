@@ -6,12 +6,14 @@ import argparse
 import ipaddress
 import json
 import math
+import os
 import re
 import secrets
 import shutil
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,8 @@ from .profile import load as load_profile
 
 LOCAL_USER = "local"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}")
+STARTUP_FILE = "rail-node.cmd"
+PYPI_PACKAGE = "rvd-railbench"
 
 
 class CliError(Exception):
@@ -383,6 +387,57 @@ def serve(args: argparse.Namespace) -> int:
     return run(load_config(args.config), args.allow_motion)
 
 
+def _startup_folder() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if os.name != "nt" or not appdata:
+        raise CliError("autostart uses the Windows Startup folder; elsewhere start rail-node serve from a service")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def _installed_from() -> list[str]:
+    names = metadata.packages_distributions().get("rvd_railnode", [])
+    return sorted({re.sub(r"[-_.]+", "-", name).lower() for name in names})
+
+
+def _batch_quote(path: Path | str) -> str:
+    return '"' + str(path).replace("%", "%%") + '"'
+
+
+def autostart(args: argparse.Namespace) -> int:
+    path = _startup_folder() / STARTUP_FILE
+    if args.remove:
+        if path.exists():
+            path.unlink()
+            print(f"removed {path}")
+        else:
+            print("autostart was not set up")
+        return 0
+    if args.config is None:
+        raise CliError("give --config, or --remove")
+    load_config(args.config)
+    config = args.config.resolve()
+    python = _batch_quote(sys.executable)
+    lines = ["@echo off", "chcp 65001 >nul", "title rail-node"]
+    if not args.no_update:
+        source = _installed_from()
+        if source != [PYPI_PACKAGE]:
+            raise CliError(f"rail-node here comes from {' and '.join(source) or 'an unknown package'}, not from "
+                           f"{PYPI_PACKAGE} on PyPI; switch with 'pip uninstall rvd-railnode' and "
+                           f"'pip install \"{PYPI_PACKAGE}[node]\"', or pass --no-update")
+        lines.append(f"{python} -m pip install --upgrade --quiet --disable-pip-version-check --timeout 15 "
+                     f"--retries 1 \"{PYPI_PACKAGE}[node]\"")
+    flags = " --allow-motion" if args.allow_motion else ""
+    lines += [f"{python} -m rvd_railnode serve --config {_batch_quote(config)}{flags}", "pause"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+    print(f"autostart  {path}")
+    if not args.no_update:
+        print(f"update     pip install --upgrade \"{PYPI_PACKAGE}[node]\" (if it fails, the node starts anyway)")
+    print(f"then       rail-node serve --config {config}{flags}")
+    print("undo       rail-node autostart --remove")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="rail-node", description=__doc__)
     root.add_argument("--version", action="version", version=f"rail-node {__version__}")
@@ -402,6 +457,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, required=True)
     p.add_argument("--allow-motion", action="store_true", help="accept motion commands (default: read-only)")
     p.set_defaults(run=serve)
+    p = sub.add_parser("autostart", help="at every Windows log-on, update from PyPI and then serve")
+    p.add_argument("--config", type=Path, help="node.json to serve")
+    p.add_argument("--allow-motion", action="store_true", help="accept motion commands (default: read-only)")
+    p.add_argument("--no-update", action="store_true", help="start without updating from PyPI first")
+    p.add_argument("--remove", action="store_true", help="no longer start the node at log-on")
+    p.set_defaults(run=autostart)
     for name, text, run in (("status", "show the node state", status), ("stop", "stop every axis", stop),
                             ("reset", "clear a fault once its cause is fixed", reset),
                             ("park", "drive the held axes to their park positions, then release them", park)):

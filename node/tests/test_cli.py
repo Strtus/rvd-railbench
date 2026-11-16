@@ -4,6 +4,7 @@ import copy
 import json
 import re
 import socket
+import sys
 import threading
 from contextlib import contextmanager
 
@@ -11,6 +12,7 @@ import pytest
 from conftest import ROOT, sim_profile, wait_for
 
 import rvd_railnode
+from rvd_railnode import cli
 from rvd_railnode.cli import main
 from rvd_railnode.config import load as load_config
 from rvd_railnode.server import build
@@ -168,6 +170,59 @@ def test_a_broken_profile_is_reported_plainly(tmp_path, capsys):
     path.write_text(json.dumps({"driver": "modbus", "axes": {"q": {}}}))
     assert main(["probe", "--profile", str(path)]) == 2
     assert "axes must be a non-empty subset" in capsys.readouterr().err
+
+
+@pytest.fixture
+def startup(tmp_path, monkeypatch):
+    folder = tmp_path / "Startup"
+    monkeypatch.setattr(cli, "_startup_folder", lambda: folder)
+    monkeypatch.setattr(cli, "_installed_from", lambda: ["rvd-railbench"])
+    return folder / "rail-node.cmd"
+
+
+def test_autostart_updates_from_pypi_and_then_serves(initialized, startup, capsys):
+    root, _ = initialized
+    assert main(["autostart", "--config", str(root / "node.json"), "--allow-motion"]) == 0
+    raw = startup.read_bytes()
+    assert raw.count(b"\r\n") == raw.count(b"\n") == raw.count(b"\r") == 6
+    lines = raw.decode("utf-8").splitlines()
+    python = f'"{sys.executable}"'
+    assert lines[:3] == ["@echo off", "chcp 65001 >nul", "title rail-node"] and lines[-1] == "pause"
+    assert lines[3] == (f"{python} -m pip install --upgrade --quiet --disable-pip-version-check --timeout 15 "
+                        '--retries 1 "rvd-railbench[node]"')
+    assert lines[4] == f'{python} -m rvd_railnode serve --config "{(root / "node.json").resolve()}" --allow-motion'
+    assert "rail-node autostart --remove" in capsys.readouterr().out
+
+
+def test_autostart_does_not_update_a_node_installed_another_way(initialized, startup, monkeypatch, capsys):
+    root, _ = initialized
+    monkeypatch.setattr(cli, "_installed_from", lambda: ["rvd-railnode"])
+    assert main(["autostart", "--config", str(root / "node.json")]) == 2
+    assert "pip uninstall rvd-railnode" in capsys.readouterr().err and not startup.exists()
+    assert main(["autostart", "--config", str(root / "node.json"), "--no-update"]) == 0
+    lines = startup.read_text(encoding="utf-8").splitlines()
+    assert not any(" -m pip " in line for line in lines) and lines[-2].endswith('node.json"')
+
+
+def test_autostart_can_be_removed(initialized, startup, capsys):
+    root, _ = initialized
+    assert main(["autostart", "--config", str(root / "node.json")]) == 0
+    assert main(["autostart", "--remove"]) == 0 and not startup.exists()
+    assert main(["autostart", "--remove"]) == 0
+    assert "not set up" in capsys.readouterr().out
+
+
+def test_autostart_needs_the_windows_startup_folder(monkeypatch, capsys):
+    monkeypatch.delenv("APPDATA", raising=False)
+    assert main(["autostart", "--remove"]) == 2
+    assert "Windows Startup folder" in capsys.readouterr().err
+
+
+def test_autostart_finds_the_installed_distribution(monkeypatch):
+    monkeypatch.setattr(cli.metadata, "packages_distributions",
+                        lambda: {"rvd_railnode": ["rvd_railbench", "rvd-railbench"], "rvdlab": ["rvd-railbench"]})
+    assert cli._installed_from() == ["rvd-railbench"]
+    assert cli._batch_quote("C:\\lab 100%\\node.json") == '"C:\\lab 100%%\\node.json"'
 
 
 def test_the_node_version_follows_the_project_version():
