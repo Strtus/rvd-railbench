@@ -25,7 +25,7 @@ The source is maintained in **RVD-RailBench** (`rvd-railbench`). The included PF
 
 - **Develop without a rig.** Run local simulations with ideal, bounded-motion, or PLC-style plant models, configurable noise and delay, and fault injection.
 - **Operate a shared testbed.** Use an authenticated hardware node to manage device access, stream controller targets, and execute waypoint tasks.
-- **Run experiments from the terminal.** Configure rail geometry and coordinate mapping, position the platform, launch rendezvous runs, and inspect telemetry in RVDLAB.
+- **Run experiments from the terminal.** Configure rail geometry and coordinate mapping, position the platform, launch rendezvous runs, and inspect telemetry in RVDLAB. The rendezvous interface shows signed X/Y/Z components of the Hill model velocity, plus rail encoder and relative motion-capture velocities when sensor data is available.
 - **Keep an inspectable experiment record.** Save resolved settings, controller inputs, trajectories, events, model hashes, and build metadata; verify recorded controller behavior offline.
 - **Adapt the integration to your laboratory.** Describe axes, units, register maps, limits, and parking behavior in a hardware profile, extending the driver where device semantics differ.
 
