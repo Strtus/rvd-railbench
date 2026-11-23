@@ -12,12 +12,13 @@ from textual.widgets import Button, Footer, Input, Sparkline, Static
 
 from ..config import read_snapshot
 from ..experiments import list_experiments
+from ..plot import VelocitySparkline
 from ..telemetry import Series, load, num, resolve_csv, summarize
 from .base import DIM, Page, kv_table, section
 
 SPARKS = (
     ("distance", "distance [m]"),
-    ("speed", "speed [m/s]"),
+    ("speed", "Hill velocity XYZ [m/s]"),
     ("track", "tracking error [mm]"),
     ("age", "measurement age [ms]"),
     ("sigma", "observation σ"),
@@ -40,8 +41,8 @@ class SensorsScreen(Page):
                 yield Static(id="summary")
             with Vertical(id="spark-pane"):
                 for key, label in SPARKS:
-                    yield Static(label, classes="spark-label", id=f"label-{key}")
-                    yield Sparkline([], id=f"spark-{key}")
+                    yield Static(label, classes="spark-label", id=f"label-{key}", markup=key != "speed")
+                    yield (VelocitySparkline if key == "speed" else Sparkline)([], id=f"spark-{key}")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -65,7 +66,10 @@ class SensorsScreen(Page):
         self.query_one("#source-info", Static).update(Text(message, style=DIM))
         self.query_one("#summary", Static).update("")
         for key, label in SPARKS:
-            self.query_one(f"#spark-{key}", Sparkline).data = []
+            if key == "speed":
+                self.query_one("#spark-speed", VelocitySparkline).set_velocity([])
+            else:
+                self.query_one(f"#spark-{key}", Sparkline).data = []
             self.query_one(f"#label-{key}", Static).update(label)
 
     def load(self, path: Path | None) -> None:
@@ -104,12 +108,15 @@ class SensorsScreen(Page):
         run = trajectory.run_rows
         data = {
             "distance": series.distance,
-            "speed": series.speed,
             "track": [v * 1e3 for r in run if (v := num(r, "track_err_m")) is not None],
             "age": [abs(v) * 1e3 for r in run if (v := num(r, "meas_age_s")) is not None],
             "sigma": [v for r in run if (v := num(r, "obs_max_z")) is not None],
         }
         for key, label in SPARKS:
+            if key == "speed":
+                self.query_one("#spark-speed", VelocitySparkline).set_velocity(series.velocity)
+                self.query_one("#label-speed", Static).update(label)
+                continue
             values = data[key]
             self.query_one(f"#spark-{key}", Sparkline).data = values
             span = f"   {min(values):.3g} … {max(values):.3g}" if values else "   no data"

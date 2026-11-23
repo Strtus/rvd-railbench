@@ -8,7 +8,7 @@ import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import RailConfig
+from .config import RailConfig, Vec3
 
 
 def num(row: dict[str, str], name: str) -> float | None:
@@ -27,6 +27,124 @@ def norm3(row: dict[str, str], a: str, b: str, c: str) -> float | None:
     if any(v is None for v in values):
         return None
     return math.sqrt(sum(v * v for v in values))  # type: ignore[operator]
+
+
+def vec3(row: dict[str, str], a: str, b: str, c: str) -> Vec3 | None:
+    values = tuple(num(row, name) for name in (a, b, c))
+    return None if any(v is None for v in values) else values  # type: ignore[return-value]
+
+
+def format_velocity(velocity: Vec3) -> str:
+    return " ".join(f"{v:+7.4f}" for v in velocity)
+
+
+@dataclass
+class EncoderSpeed:
+    """Rail speed over the latest two encoder samples, using the node's own clock."""
+
+    value: float | None = None
+    components: Vec3 | None = None
+    interval_s: float | None = None
+    frame_id: float | None = None
+    reason: str = "waiting for encoders"
+    _previous: tuple[float, float, Vec3] | None = field(default=None, repr=False)
+
+    def extend(self, rows: list[dict[str, str]]) -> None:
+        for row in rows:
+            self.value = self.interval_s = None
+            self.components = None
+            previous, self._previous = self._previous, None
+            stamp, frame = num(row, "t_encoder"), num(row, "frame_id")
+            self.frame_id = frame
+            position = tuple(num(row, f"enc_{a}") for a in "xyz")
+            if stamp is None or frame is None or frame < 0 or any(v is None for v in position):
+                self.reason = "invalid encoder sample"
+                continue
+            self._previous = (stamp, frame, position)  # type: ignore[assignment]
+            if previous is None:
+                self.reason = "need 2 samples"
+                continue
+            dt = stamp - previous[0]
+            if (frame <= previous[1] or dt < 0 or not math.isfinite(dt)
+                    or (dt == 0 and position != previous[2])):
+                self._previous = None
+                self.reason = "invalid sample timing"
+                continue
+            if dt == 0:
+                # Consecutive polls can share a timestamp on the node's clock.
+                self.reason = "need newer encoder time"
+                continue
+            components = tuple((p - q) / dt for p, q in zip(position, previous[2]))  # type: ignore[operator]
+            speed = math.hypot(*components)
+            if not math.isfinite(speed):
+                self._previous = None
+                self.reason = "invalid encoder speed"
+                continue
+            self.value, self.interval_s, self.reason = speed, dt, ""
+            self.components = components  # type: ignore[assignment]
+
+
+@dataclass
+class MocapSpeed:
+    """Relative speed of two valid, synchronized VRPN trackers in their common metre frame."""
+
+    body: str = "Target"
+    reference: str = "Chaser"
+    value: float | None = None
+    components: Vec3 | None = None
+    interval_s: float | None = None
+    frame_id: float | None = None
+    reason: str = "waiting for mocap"
+    _previous: tuple[float, tuple[float, float], Vec3] | None = field(default=None, repr=False)
+
+    def extend(self, rows: list[dict[str, str]]) -> None:
+        for row in rows:
+            self.value = self.interval_s = None
+            self.components = None
+            previous, self._previous = self._previous, None
+            self.frame_id = num(row, "frame_id")
+            names = (self.body, self.reference)
+            if any(f"{name}_valid" not in row for name in names):
+                self.reason = "no mocap pair"
+                continue
+            invalid = next((name for name in names if num(row, f"{name}_valid") != 1), None)
+            if invalid is not None:
+                self.reason = f"{invalid} invalid"
+                continue
+            stamps = tuple(num(row, f"{name}_t_source") for name in names)
+            frames = tuple(num(row, f"{name}_frames") for name in names)
+            ages = tuple(num(row, f"{name}_age_s") for name in names)
+            positions = [tuple(num(row, f"{name}_p{a}") for a in "xyz") for name in names]
+            if (any(v is None for v in (*stamps, *frames, *ages, *positions[0], *positions[1]))
+                    or any(v < 0 for v in (*frames, *ages))):  # type: ignore[operator]
+                self.reason = "invalid mocap sample"
+                continue
+            # Pair only the same camera frame, allowing the VRPN timestamp's microsecond resolution.
+            if abs(stamps[0] - stamps[1]) > 1e-6:  # type: ignore[operator]
+                self.reason = "poses out of sync"
+                continue
+            relative = tuple(p - q for p, q in zip(*positions))  # type: ignore[operator]
+            if not all(math.isfinite(v) for v in relative):
+                self.reason = "invalid mocap sample"
+                continue
+            self._previous = (stamps[0], frames, relative)  # type: ignore[assignment]
+            if previous is None:
+                self.reason = "need 2 pose pairs"
+                continue
+            dt = stamps[0] - previous[0]  # type: ignore[operator]
+            if (dt <= 0 or not math.isfinite(dt)
+                    or any(f <= p for f, p in zip(frames, previous[1]))):  # type: ignore[operator]
+                self._previous = None
+                self.reason = "invalid mocap timing"
+                continue
+            components = tuple((p - q) / dt for p, q in zip(relative, previous[2]))
+            speed = math.hypot(*components)
+            if not math.isfinite(speed):
+                self._previous = None
+                self.reason = "invalid mocap speed"
+                continue
+            self.value, self.interval_s, self.reason = speed, dt, ""
+            self.components = components  # type: ignore[assignment]
 
 
 @dataclass
@@ -88,6 +206,7 @@ class Series:
     z: list[float] = field(default_factory=list)
     distance: list[float] = field(default_factory=list)
     speed: list[float] = field(default_factory=list)
+    velocity: list[Vec3] = field(default_factory=list)
     intervened: list[bool] = field(default_factory=list)
 
     def extend(self, rows: list[dict[str, str]]) -> None:
@@ -100,6 +219,9 @@ class Series:
             self.z.append(h[2])  # type: ignore[arg-type]
             self.distance.append(math.sqrt(sum(v * v for v in h)))  # type: ignore[operator]
             self.speed.append(norm3(row, "hvx", "hvy", "hvz") or 0.0)
+            velocity = vec3(row, "hvx", "hvy", "hvz")
+            if velocity is not None:
+                self.velocity.append(velocity)
             self.intervened.append(row.get("intervened") == "1")
 
 
@@ -178,9 +300,10 @@ def summarize(trajectory: Trajectory, rail: RailConfig, ood_warn_z: float = 6.5)
     t0, t1 = num(rows[0], "t_tick"), num(last, "t_tick")
     if t0 is not None and t1 is not None:
         out.append(Metric("Result", "Duration", f"{t1 - t0:.0f} s"))
-    d, s = norm3(last, "hx", "hy", "hz"), norm3(last, "hvx", "hvy", "hvz")
+    d, v = norm3(last, "hx", "hy", "hz"), vec3(last, "hvx", "hvy", "hvz")
     if d is not None:
-        out.append(Metric("Result", "Final distance", f"{d:.3f} m", f"speed {s:.3f} m/s" if s is not None else ""))
+        out.append(Metric("Result", "Final distance", f"{d:.3f} m",
+                          f"Hill model vX/Y/Z {format_velocity(v)} m/s" if v is not None else ""))
 
     ages = [abs(v) for r in run if (v := num(r, "meas_age_s")) is not None]
     if ages:

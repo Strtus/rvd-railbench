@@ -159,7 +159,7 @@ class Bridge:
     """Holds a stream lease on x, y, z and answers rail_main's READ / SEND / HOLD lines (see bridge.hpp).
 
     Axes named in simulated stay where they are on the rail; the bridge integrates them itself instead.
-    With record() and a node that has mocap, each READ also appends a row to a SensorLog."""
+    With record(), each READ also logs the unmodified encoders and any mocap poses."""
 
     def __init__(self, node: Any, log: Callable[[str], None] = lambda _: None, simulated: tuple[str, ...] = (),
                  on_fault: Callable[[], None] = lambda: None) -> None:
@@ -206,7 +206,7 @@ class Bridge:
     def record(self, path: Path) -> None:
         """Opens the sensor log on the first READ, when rail_main has created the experiment directory."""
         with self._sensor_lock:
-            if self.trackers and not self.stop_event.is_set():
+            if not self.stop_event.is_set():
                 self.sensor_path = path
 
     def start(self) -> None:

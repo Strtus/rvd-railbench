@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from rich.table import Table
 from rich.text import Text
+from textual.renderables.sparkline import Sparkline as SparklineRenderable
 from textual.widget import Widget
+from textual.widgets import Sparkline
+
+from .config import Vec3
 
 _DOTS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
 AXIS = "#5f5f5f"
@@ -20,6 +25,33 @@ RAW = "#5fd7ff"
 FILTERED = "#5fdf87"
 
 Marker = tuple[float, float, str]
+
+
+class VelocitySparkline(Sparkline):
+    """Three signed component histories in the existing three-line sparkline area."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.samples: list[Vec3] = []
+        self.tooltip = "Hill velocity X / Y / Z in m/s; one row per axis, each with its own scale."
+
+    def set_velocity(self, samples: Sequence[Vec3]) -> None:
+        self.samples = list(samples)
+        self.refresh()
+
+    def render(self) -> Table:
+        _, base = self.background_colors
+        minimum = base + self.get_component_styles("sparkline--min-color").color
+        maximum = base + self.get_component_styles("sparkline--max-color").color
+        table = Table.grid(padding=(0, 1))
+        table.add_column(width=1, style=LABEL)
+        table.add_column(width=max(1, self.size.width - 2))
+        for i, axis in enumerate("XYZ"):
+            table.add_row(axis, SparklineRenderable(
+                [v[i] for v in self.samples], width=max(1, self.size.width - 2), height=1,
+                min_color=minimum.rich_color, max_color=maximum.rich_color,
+                summary_function=self.summary_function))
+        return table
 
 
 @dataclass

@@ -46,6 +46,22 @@ class FakeMocap:
         return {"trackers": {"Chaser": chaser, "Target": {"valid": False, "reason": "no pose received"}}}
 
 
+class MovingMocap(FakeMocap):
+    def __init__(self):
+        self.frame = 0
+
+    def state(self) -> dict:
+        self.frame += 1
+        elapsed = self.frame / 100
+        common = {"valid": True, "reason": None, "age_s": 0.01, "received": time.monotonic(),
+                  "source_time": 100.0 + elapsed, "frames": self.frame,
+                  "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]}
+        return {"trackers": {
+            "Chaser": {**common, "position_raw": [1.0, 2.0, 3.0]},
+            "Target": {**common, "position_raw": [2.0 + 0.02 * elapsed, 2.0, 3.0]},
+        }}
+
+
 @pytest.fixture
 def node(tmp_path: Path, monkeypatch, request):
     # These integration tests exercise the UI and node, not real-time scheduling.
@@ -180,14 +196,18 @@ def test_closing_during_a_read_does_not_reopen_or_truncate_the_log(node, tmp_pat
     assert path.read_bytes() == recorded
 
 
-def test_a_node_without_mocap_writes_no_sensor_log(node, tmp_path):
+def test_a_node_without_mocap_still_records_encoders(node, tmp_path):
     connection, _ = node
     bridge = Bridge(connect(connection))
     bridge.acquire()
     bridge.record(tmp_path / "sensors.csv")
     pos(bridge.answer(["READ"]))
     bridge.close()
-    assert not (tmp_path / "sensors.csv").exists()
+    with (tmp_path / "sensors.csv").open(newline="") as stream:
+        row, = csv.DictReader(stream)
+    assert set(row) == {"frame_id", "t_node", "t_encoder", "enc_x", "enc_y", "enc_z"}
+    assert [float(row[f"enc_{a}"]) for a in "xyz"] == pytest.approx(START)
+    assert float(row["t_encoder"]) <= float(row["t_node"])
 
 
 def test_a_simulated_axis_runs_at_the_commanded_speed_and_stops_at_the_target():
@@ -270,7 +290,7 @@ def test_rail_main_runs_through_the_bridge(node, tmp_path):
     assert trajectory[-1]["reason"] == "MAX_STEPS" and trajectory[-1]["frame_id"] == "-1"
 
 
-def assert_sensor_alignment(directory):
+def assert_sensor_alignment(directory, mocap=True):
     with (directory / "sensors.csv").open(newline="", encoding="utf-8") as stream:
         samples = list(csv.DictReader(stream))
     with (directory / "trajectory.csv").open(newline="", encoding="utf-8") as stream:
@@ -283,7 +303,8 @@ def assert_sensor_alignment(directory):
         sample = logged[row["frame_id"]]
         for axis in "xyz":
             assert float(sample[f"enc_{axis}"]) == pytest.approx(float(row[f"enc_{axis}"]), abs=1e-6)
-    assert all(row["Chaser_valid"] == "1" and row["Chaser_qw"] == "1.0" for row in samples)
+    if mocap:
+        assert all(row["Chaser_valid"] == "1" and row["Chaser_qw"] == "1.0" for row in samples)
     return samples, trajectory
 
 
@@ -398,7 +419,7 @@ async def test_rendezvous_offers_the_node_and_stops_the_rail(node, tmp_path, pro
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
-@pytest.mark.parametrize("node", [None, FakeMocap()], indirect=True)
+@pytest.mark.parametrize("node", [None, FakeMocap(), MovingMocap()], indirect=True)
 async def test_a_run_on_the_node_ends_with_the_rail_released(node, tmp_path, profiles):
     connection, rail = node
     app = RvdLabApp(root=ROOT, experiments=tmp_path / "experiments", profiles=profiles, node=connection)
@@ -416,11 +437,16 @@ async def test_a_run_on_the_node_ends_with_the_rail_released(node, tmp_path, pro
         assert screen.outcome[0] == "LIMIT_REACHED", screen.outcome
         assert rail.snapshot()["control"] is None and screen.bridge is None
         assert not app.has_class("rail-control-active")
-        if rail.mocap is not None:
-            samples, _ = assert_sensor_alignment(screen.experiment)
-            assert len(samples) == 3
+        samples, _ = assert_sensor_alignment(screen.experiment, mocap=rail.mocap is not None)
+        assert len(samples) == 3
+        assert screen.encoder_speed.value is not None
+        assert "Rail encoder" in shown(screen.query_one("#run-status", Static))
+        if isinstance(rail.mocap, MovingMocap):
+            assert screen.mocap_speed.value == pytest.approx(0.02)
+            assert screen.mocap_speed.components == pytest.approx((0.02, 0.0, 0.0))
+            assert "Mocap raw rel." in shown(screen.query_one("#run-status", Static))
         else:
-            assert not (screen.experiment / "sensors.csv").exists()
+            assert screen.mocap_speed.value is None
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
@@ -445,6 +471,10 @@ async def test_a_run_with_z_simulated_leaves_the_rail_z_alone(node, tmp_path, pr
         assert state["position"]["x"] != pytest.approx(START[0], abs=1e-6)
         note = json.loads(next((tmp_path / "experiments").glob("*/rail_node.json")).read_text())
         assert note["simulated_axes"] == ["z"] and set(note["speed_floor_m_s"]) == {"x", "y"}
+        with (screen.experiment / "sensors.csv").open(newline="") as stream:
+            samples = list(csv.DictReader(stream))
+        assert all(float(r["enc_z"]) == pytest.approx(START[2]) for r in samples)
+        assert screen.encoder_speed.value is not None
 
 
 @pytest.mark.skipif(find_build(ROOT).rail_main is None, reason="rail_main is not built")
