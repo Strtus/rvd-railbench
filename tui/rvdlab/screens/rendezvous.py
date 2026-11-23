@@ -19,10 +19,10 @@ from textual.widgets import Button, Footer, Input, RichLog, Select, Sparkline, S
 from ..config import Vec3, envelope_violations, hill_to_rail, rail_to_hill, simulation_override
 from ..comparison import Comparison, coordinates
 from ..experiments import new_experiment_dir, read_experiment, simulation_command
-from ..plot import FILTERED, HIGHLIGHT, NOMINAL, RAW, TRACE, PlotView, Trace
+from ..plot import FILTERED, HIGHLIGHT, NOMINAL, RAW, TRACE, PlotView, Trace, VelocitySparkline
 from ..project import ProjectError
 from ..remote import AXES, Bridge, connect, move, remote_override
-from ..telemetry import CsvTail, Series, norm3, num
+from ..telemetry import CsvTail, EncoderSpeed, MocapSpeed, Series, format_velocity, norm3, num, vec3
 from .base import DIM, Page
 from .node_view import ConfirmModal
 
@@ -81,8 +81,8 @@ class RendezvousScreen(Page):
                 yield Static("Comparison available after run", id="comparison-status")
                 yield Static("distance [m]", classes="spark-label", id="label-distance")
                 yield Sparkline([], id="spark-distance")
-                yield Static("speed [m/s]", classes="spark-label", id="label-speed")
-                yield Sparkline([], id="spark-speed")
+                yield Static("Hill velocity XYZ [m/s]", classes="spark-label", id="label-speed", markup=False)
+                yield VelocitySparkline([], id="spark-speed")
             with Vertical(id="plots"):
                 with Horizontal(id="plot-legend-row"):
                     with Vertical(id="global-legend"):
@@ -119,6 +119,9 @@ class RendezvousScreen(Page):
         self.hardware_run = False
         self.stop_requested = False
         self.series = Series()
+        self.encoder_speed = EncoderSpeed()
+        self.mocap_speed = MocapSpeed()
+        self.sensor_tail: CsvTail | None = None
         self.comparison = Comparison()
         self.comparison_busy = False
         self.last_row: dict[str, str] | None = None
@@ -128,6 +131,16 @@ class RendezvousScreen(Page):
         self.message = ""
         self.defaults_from: tuple = ()
         self.apply_defaults()
+        self.query_one("#run-status", Static).tooltip = (
+            "Velocity rows show signed X / Y / Z components in m/s.\n"
+            "Hill model: controller velocity in the Hill frame.\n"
+            "Rail encoder: encoder displacement / sample interval, in physical rail axes.\n"
+            "Uses the physical encoders even when a controller axis is simulated.\n"
+            "Mocap raw rel.: velocity of Target - Chaser in the original mocap axes, not the rail axes.\n"
+            "Uses camera source-time differences and no Hill scaling.\n"
+            "Both trackers must be valid and synchronized; this is relative motion, not closing speed.\n"
+            "Finished runs retain the last recorded samples, not the current rail speed."
+        )
         self.render_status()
 
     def apply_defaults(self) -> None:
@@ -388,6 +401,9 @@ class RendezvousScreen(Page):
         self.lab.set_rail_control_state("running" if self.hardware_run else "idle")
         self.stop_requested = False
         self.series = Series()
+        self.encoder_speed = EncoderSpeed()
+        self.mocap_speed = MocapSpeed()
+        self.sensor_tail = CsvTail(directory / "sensors.csv") if self.hardware_run else None
         self.last_row = None
         self.interventions = 0
         self.experiment = directory
@@ -456,6 +472,10 @@ class RendezvousScreen(Page):
     def consume(self, rows: list[dict[str, str]]) -> None:
         if not rows:
             return
+        if self.sensor_tail is not None:
+            samples = self.sensor_tail.poll()
+            self.encoder_speed.extend(samples)
+            self.mocap_speed.extend(samples)
         self.series.extend(rows)
         self.interventions += sum(1 for r in rows if r.get("intervened") == "1")
         self.last_row = rows[-1]
@@ -580,9 +600,9 @@ class RendezvousScreen(Page):
             self.query_one("#plot-xy", PlotView).plot([], [])
             self.query_one("#plot-xz", PlotView).plot([], [])
         self.query_one("#spark-distance", Sparkline).data = list(s.distance)
-        self.query_one("#spark-speed", Sparkline).data = list(s.speed)
+        self.query_one("#spark-speed", VelocitySparkline).set_velocity(s.velocity)
         self.query_one("#label-distance", Static).update(f"distance [m]   {_range(s.distance)}")
-        self.query_one("#label-speed", Static).update(f"speed [m/s]   {_range(s.speed)}")
+        self.query_one("#label-speed", Static).update("Hill velocity XYZ [m/s]")
         self.refresh_local_plots()
         plots = list(self.query("#plots PlotView"))
         label_width = max(plot.axis_label_width for plot in plots)
@@ -594,7 +614,7 @@ class RendezvousScreen(Page):
         if self.running:
             state = "running" + (f" · k {row.get('k')}" if row else "")
         elif self.outcome:
-            state = "finished"
+            state = "finished · last sample"
         else:
             state = "idle"
         rows = [("State", state)]
@@ -602,11 +622,35 @@ class RendezvousScreen(Page):
             h = [num(row, n) for n in ("hx", "hy", "hz")]
             if None not in h:
                 rows.append(("Hill", "  ".join(f"{v:.3f}" for v in h) + " m"))  # type: ignore[str-format]
-            d, v = norm3(row, "hx", "hy", "hz"), norm3(row, "hvx", "hvy", "hvz")
+            d, v = norm3(row, "hx", "hy", "hz"), vec3(row, "hvx", "hvy", "hvz")
             if d is not None:
                 rows.append(("Distance", f"{d:.3f} m"))
-            if v is not None:
-                rows.append(("Speed", f"{v:.3f} m/s"))
+            rows.append(("Velocity [m/s]", " ".join(f"{axis:>7}" for axis in "XYZ")))
+            rows.append(("Hill model", format_velocity(v) if v is not None else "— (unavailable)"))
+            speed = self.encoder_speed
+            if not self.hardware_run:
+                actual = "— (simulation)"
+            elif speed.components is None:
+                actual = f"— ({speed.reason})"
+            elif self.running and num(row, "frame_id") != speed.frame_id:
+                actual = "— (no fresh encoders)"
+            else:
+                actual = format_velocity(speed.components)
+            rows.append(("Rail encoder", actual))
+            mocap = self.mocap_speed
+            if not self.hardware_run:
+                observed = "— (simulation)"
+            elif mocap.components is None:
+                observed = f"— ({mocap.reason})"
+            elif self.running and num(row, "frame_id") != mocap.frame_id:
+                observed = "— (no fresh mocap)"
+            else:
+                observed = format_velocity(mocap.components)
+            rows.append(("Mocap raw rel.", observed))
+            if self.hardware_run and speed.interval_s is not None and not actual.startswith("—"):
+                rows.append(("Encoder interval", f"{speed.interval_s:.3f} s"))
+            if self.hardware_run and mocap.interval_s is not None and not observed.startswith("—"):
+                rows.append(("Mocap interval", f"{mocap.interval_s:.3f} s"))
             rows.append(("Safety", f"{self.interventions} interventions"))
         if self.outcome:
             rows.append(("Outcome", " · ".join(part for part in self.outcome if part)))
@@ -616,7 +660,7 @@ class RendezvousScreen(Page):
         table.add_column(style=DIM, no_wrap=True)
         table.add_column()
         for name, value in rows:
-            table.add_row(name, value)
+            table.add_row(Text(name), value)
         if self.message:
             table.add_row("Note", Text(self.message, style="bold"))
         self.query_one("#run-status", Static).update(table)

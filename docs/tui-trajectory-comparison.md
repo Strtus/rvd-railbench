@@ -1,5 +1,29 @@
 # TUI trajectory comparison
 
+The run status displays signed **X / Y / Z velocity components**, with a shared `Velocity [m/s]`
+header. **Hill model** uses the controller's Hill-frame velocity. **Rail encoder** divides each
+physical rail-axis displacement by the elapsed encoder sample time, using the original node
+timestamps in `sensors.csv`. Signs are preserved; these rows do not display velocity magnitudes.
+**Encoder interval** shows the averaging interval. The sensor log is recorded even without mocap;
+when a controller axis is simulated, the encoder row still uses that axis's physical encoder.
+Missing, repeated or invalid samples show an unavailable value. If consecutive encoder frames
+share a timestamp and position, that measurement is kept until a later timestamp arrives.
+Simulator runs show `Rail encoder — (simulation)`. A finished run retains the last recorded samples, labelled
+`finished · last sample`; it does not report the rail's speed after recording ends.
+
+**Mocap raw rel.** divides each component of the change in `Target - Chaser` position by the camera
+source-time interval. The components use the original motion-capture axes and physical m/s;
+they are not assumed to align with the rail axes and have no Hill scaling. **Mocap interval**
+shows this interval. Both trackers must be valid, have advancing
+frame counters and source timestamps, and belong to the same camera frame (within 1 microsecond).
+Missing, stale, invalid, repeated or unsynchronized poses show an unavailable value; recovery
+requires two fresh valid pairs. The receiver's validity flag supplies the configured freshness check.
+This display uses the recorded poses, not the encoder values or a separate camera velocity feed,
+and does not feed the control loop.
+
+The Hill velocity history uses three rows labelled X, Y and Z in the existing sparkline area.
+Each axis has its own scale. The telemetry page uses the same three-component display.
+
 Autonomous Rendezvous shows these views after a run finishes:
 
 - **Actual (white and orange ×):** the logged Hill-frame position used by the controller. Orange × marks a step where the safety filter changed the requested force, including backup intervention. It is part of the actual path, not a separate trajectory.
