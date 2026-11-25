@@ -129,7 +129,8 @@ class NodeClient:
         return self.lease
 
     def setpoint(self, position: dict[str, float], speed: float | dict[str, float], *, deadline: float | None = None,
-                 sample_time: float | None = None) -> dict[str, Any]:
+                 sample_time: float | None = None,
+                 watchdog_deadline: float | None = None) -> dict[str, Any]:
         lease = self._require_lease()
         if deadline is None:
             deadline = self.clock() + lease["timeout_s"]
@@ -138,6 +139,8 @@ class NodeClient:
                 "deadline": deadline, "position": position, "speed": speed}
         if sample_time is not None:
             body["sample_time"] = sample_time
+        if watchdog_deadline is not None:
+            body["watchdog_deadline"] = watchdog_deadline
         return self.request("POST", "/v1/setpoint", body, timeout=lease["timeout_s"] + 2.0)
 
     def task(self, points: list[dict[str, Any]]) -> dict[str, Any]:

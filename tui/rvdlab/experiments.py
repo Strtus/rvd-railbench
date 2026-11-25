@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import read_snapshot
+from .config import EXTERNAL_CONTROLLER, read_snapshot
 from .project import Project, ProjectError
 
 
@@ -25,10 +25,16 @@ class ExperimentRecord:
     backend: str = ""
     hardware: bool | None = None
     complete: bool = False
+    controller: str = ""
+    external_name: str = ""
 
     @property
     def id(self) -> str:
         return self.path.name
+
+    @property
+    def external_reference(self) -> bool:
+        return self.controller == EXTERNAL_CONTROLLER
 
 
 def _json(path: Path) -> dict:
@@ -49,6 +55,8 @@ def read_experiment(path: Path) -> ExperimentRecord | None:
         backend=str(metadata.get("backend", "")),
         hardware=metadata.get("hardware"),
         complete=(path / "checksums.sha256").is_file(),
+        controller=str(metadata.get("controller", "")),
+        external_name=str(metadata.get("external_name") or ""),
     )
     summary = _json(path / "summary.json")
     if summary:

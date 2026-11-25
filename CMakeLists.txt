@@ -49,6 +49,8 @@ add_library(rvd_runtime
   src/control/pfcr_adapter.cpp
   src/simulation/rail_simulator.cpp
   src/runtime/runtime.cpp
+  src/runtime/external.cpp
+  src/runtime/external_peer.cpp
   src/runtime/experiment.cpp
   src/runtime/replay.cpp
   src/runtime/preview.cpp
@@ -146,6 +148,10 @@ if(BUILD_TESTING)
   add_test(NAME bridge_integration COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/bridge_test.py $<TARGET_FILE:rail_main> ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(bridge_integration PROPERTIES LABELS "integration;faults" TIMEOUT 120)
+  add_test(NAME external_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/external_test.py
+    $<TARGET_FILE:rail_main> $<TARGET_FILE:rail_replay> ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(external_integration PROPERTIES LABELS "integration;faults" TIMEOUT 120)
   rvd_test(safety_time_test faults tests/faults/safety_time_test.cpp)
   rvd_test(simulation_test "unit;faults" tests/faults/simulation_test.cpp)
   rvd_test(controller_artifact_test unit tests/unit/controller_artifact_test.cpp)

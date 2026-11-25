@@ -156,6 +156,14 @@ class Trajectory:
     def run_rows(self) -> list[dict[str, str]]:
         return [r for r in self.rows if r.get("status") == "RUN"]
 
+    @property
+    def tracking_errors(self) -> list[float]:
+        # Keep the valid measurement that triggered a tracking fault and the
+        # final measurement recorded when an external run finishes normally.
+        measured = (r for r in self.rows if r.get("status") in ("RUN", "COMPLETE", "STOPPED")
+                    or r.get("reason") == "RAIL_TRACKING_ERROR")
+        return [v for r in measured if (v := num(r, "track_err_m")) is not None]
+
 
 def resolve_csv(path: Path) -> Path:
     return path / "trajectory.csv" if path.is_dir() else path
@@ -323,7 +331,7 @@ def summarize(trajectory: Trajectory, rail: RailConfig, ood_warn_z: float = 6.5)
     if ack:
         out.append(Metric("Timing", "PLC acknowledgment", f"{_ms(ack):.1f} ms max", "write returned, not motion"))
 
-    track = [v for r in run if (v := num(r, "track_err_m")) is not None]
+    track = trajectory.tracking_errors
     if track:
         out.append(Metric("Tracking", "Tracking error", f"{max(track) * 1e3:.1f} mm max",
                           f"limit {rail.tracking_error_m * 1e3:.0f} mm"))
@@ -358,8 +366,9 @@ def summarize(trajectory: Trajectory, rail: RailConfig, ood_warn_z: float = 6.5)
     if sigma:
         out.append(Metric("Controller", "Observation σ", f"{max(sigma):.2f} max",
                           f"{sum(1 for v in sigma if v > ood_warn_z)} steps above {ood_warn_z:g}"))
-    if run:
+    if run and "intervened" in run[0]:
         interventions = sum(1 for r in run if r.get("intervened") == "1")
         out.append(Metric("Controller", "Safety interventions", str(interventions), f"{interventions / len(run) * 100:.0f}% of RUN steps"))
+    if run and "backup" in run[0]:
         out.append(Metric("Controller", "Backup steps", str(sum(1 for r in run if r.get("backup") == "1"))))
     return out

@@ -52,14 +52,16 @@ std::ofstream open(const std::filesystem::path& path) {
   return out;
 }
 }  // namespace
-Experiment::Experiment(const Options& o) {
+Experiment::Experiment(const Options& o) : external_(o.external_port > 0) {
   directory_ = o.experiment_dir.empty() ? std::filesystem::path("experiments") / utc(true)
                                         : std::filesystem::path(o.experiment_dir);
-  const auto export_path = std::filesystem::weakly_canonical(std::filesystem::absolute(o.log));
-  const auto experiment_path = std::filesystem::weakly_canonical(std::filesystem::absolute(directory_));
-  if (export_path.parent_path() == experiment_path && export_path.filename() != "trajectory.csv")
-    throw std::invalid_argument(
-        "--log must not overwrite structured experiment files; use trajectory.csv or an external path");
+  if (!o.log.empty()) {
+    const auto export_path = std::filesystem::weakly_canonical(std::filesystem::absolute(o.log));
+    const auto experiment_path = std::filesystem::weakly_canonical(std::filesystem::absolute(directory_));
+    if (export_path.parent_path() == experiment_path && export_path.filename() != "trajectory.csv")
+      throw std::invalid_argument(
+          "--log must not overwrite structured experiment files; use trajectory.csv or an external path");
+  }
   // Atomic ownership of a new directory: never overwrite an existing experiment.
   if (!directory_.parent_path().empty()) std::filesystem::create_directories(directory_.parent_path());
   if (!std::filesystem::create_directory(directory_))
@@ -67,15 +69,21 @@ Experiment::Experiment(const Options& o) {
   auto config = open(directory_ / "configuration.ini");
   config << configuration_snapshot(o);
   config.close();
-  const auto& model = model_of(o.rail);
   auto metadata = open(directory_ / "metadata.json");
   metadata << "{\n  \"schema_version\": 1,\n  \"experiment_id\": " << quote(directory_.filename().string())
            << ",\n  \"started_utc\": " << quote(utc(false))
-           << ",\n  \"controller\": \"pfcr-dqp\",\n  \"controller_version\": \"1\",\n  \"model_id\": "
-           << quote(model.id) << ",\n  \"weights_sha256\": " << quote(model.weights_sha256)
-           << ",\n  \"onnx_sha256\": " << (o.onnx ? quote(model.onnx_sha256) : "null")
-           << ",\n  \"backend\": " << quote(o.onnx ? "onnx" : "builtin")
-           << ",\n  \"git_commit_at_build\": " << quote(RVD_GIT_COMMIT)
+           << ",\n  \"controller\": " << quote(external_ ? "external-reference" : "pfcr-dqp")
+           << ",\n  \"controller_version\": \"1\"";
+  if (external_) {
+    metadata << ",\n  \"backend\": \"external\",\n  \"external_name\": " << quote(o.external_name);
+  } else {
+    const auto& model = model_of(o.rail);
+    metadata << ",\n  \"model_id\": " << quote(model.id)
+             << ",\n  \"weights_sha256\": " << quote(model.weights_sha256)
+             << ",\n  \"onnx_sha256\": " << (o.onnx ? quote(model.onnx_sha256) : "null")
+             << ",\n  \"backend\": " << quote(o.onnx ? "onnx" : "builtin");
+  }
+  metadata << ",\n  \"git_commit_at_build\": " << quote(RVD_GIT_COMMIT)
            << ",\n  \"source_dirty_at_build\": " << quote(RVD_GIT_DIRTY) << ",\n  \"seed\": " << o.seed
            << ",\n  \"clock\": " << quote(o.fast ? "virtual-monotonic" : "steady-monotonic")
            << ",\n  \"compiler\": "
@@ -91,7 +99,10 @@ Experiment::Experiment(const Options& o) {
            << ",\n  \"state\": \"INITIALIZING\"\n}\n";
   metadata.close();
   inputs_ = open(directory_ / "controller.csv");
-  inputs_ << "k,t_acquired,hx,hy,hz,a0,a1,a2,n0,n1,n2,n3,n4,n5,backup,intervened,status,reason\n";
+  if (external_)
+    inputs_ << kExternalControllerColumns << '\n';
+  else
+    inputs_ << "k,t_acquired,hx,hy,hz,a0,a1,a2,n0,n1,n2,n3,n4,n5,backup,intervened,status,reason\n";
   events_ = open(directory_ / "events.jsonl");
   event(0, "state", "INITIALIZING");
 }
@@ -122,6 +133,16 @@ void Experiment::controller_step(int k, const Vec3& input, double acquired, cons
     event(acquired, "intervention", r.backup_active ? "BACKUP" : "CBF_QP");
   }
 }
+void Experiment::external_step(int k, const Vec3& input, double acquired, long long frame_id,
+                               const Vec3& target_hill, const Vec3& velocity_hill) {
+  inputs_ << k << ',' << acquired << ',' << frame_id;
+  for (double v : input) inputs_ << ',' << v;
+  for (double v : target_hill) inputs_ << ',' << v;
+  for (double v : velocity_hill) inputs_ << ',' << v;
+  inputs_ << '\n';
+  inputs_.flush();
+  ++steps_;
+}
 void Experiment::event(double time, const std::string& type, const std::string& reason) {
   events_ << "{\"time_s\":" << (has(time) ? std::to_string(time) : "null") << ",\"type\":" << quote(type)
           << ",\"reason\":" << quote(reason) << "}\n";
@@ -137,8 +158,8 @@ void Experiment::finish(const std::string& outcome, const std::string& reason, i
   auto f = open(tmp);
   f << "{\n  \"outcome\": " << quote(outcome) << ",\n  \"reason\": " << quote(reason)
     << ",\n  \"exit_code\": " << code << ",\n  \"controller_steps\": " << steps_
-    << ",\n  \"interventions\": " << interventions_ << ",\n  \"finished_utc\": " << quote(utc(false))
-    << "\n}\n";
+    << ",\n  \"interventions\": " << (external_ ? "null" : std::to_string(interventions_))
+    << ",\n  \"finished_utc\": " << quote(utc(false)) << "\n}\n";
   f.close();
   std::filesystem::rename(tmp, directory_ / "summary.json");
   auto integrity = open(directory_ / "checksums.sha256.tmp");

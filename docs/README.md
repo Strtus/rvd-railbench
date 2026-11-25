@@ -8,6 +8,7 @@ a physical platform.
   for package requirements, installation, and a local run. Continue with
   [simulation settings](configuration.md#simulation-and-node-runs), or follow
   [Build from source](development.md#build-from-source) to use a source checkout.
+- **Connect Simulink.** Start with the [external control example](external-control.md), then use the same exchange with your own model.
 - **Connect a laboratory platform.** Read [safety and stop behavior](safety.md),
   then follow [node setup](hardware-integration.md#set-up-a-node),
   [hardware profiles](hardware-integration.md#hardware-profile), and

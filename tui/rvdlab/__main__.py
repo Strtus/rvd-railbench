@@ -23,7 +23,14 @@ def check(project) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="rvdlab", description="Terminal interface for RVD-RailBench")
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["external"]:
+        from .external import main as external_main
+
+        return external_main(argv[1:])
+
+    parser = argparse.ArgumentParser(prog="rvdlab", description="Terminal interface for RVD-RailBench",
+                                     epilog="Run 'rvdlab external --help' to connect an external controller.")
     parser.add_argument("--root", type=Path, help="RVD-RailBench installation or checkout (default: detected)")
     parser.add_argument("--config", type=Path, action="append",
                         help="rail_main configuration file, applied in order; replaces configs/*.ini")

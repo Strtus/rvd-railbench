@@ -70,11 +70,15 @@ class ManagerScreen(Page):
         table.clear()
         for r in self.records:
             clock = "virtual" if r.clock.startswith("virtual") else ("real time" if r.clock else "–")
+            mode = r.mode
+            if r.external_reference:
+                source = "bridge" if r.hardware else r.mode
+                mode = f"external / {source}" if source else "external"
             table.add_row(
                 r.id, r.started.replace("T", " ")[:19], r.outcome, r.reason or "–",
                 "–" if r.steps is None else str(r.steps),
                 "–" if r.interventions is None else str(r.interventions),
-                r.mode or "–", clock, "ok" if r.complete else "–", key=r.id)
+                mode or "–", clock, "ok" if r.complete else "–", key=r.id)
         self.query_one("#manager-context", Static).update(Text(
             f"{p.relative(p.experiments_dir)} · {len(self.records)} experiments · Enter opens telemetry", style=DIM))
         self.status("" if self.records else "No experiments yet. Run one from Autonomous Rendezvous.")
@@ -82,6 +86,12 @@ class ManagerScreen(Page):
     def selected(self) -> ExperimentRecord | None:
         row = self.query_one(DataTable).cursor_row
         return self.records[row] if 0 <= row < len(self.records) else None
+
+    @on(DataTable.RowHighlighted)
+    def show_controller_name(self) -> None:
+        record = self.selected()
+        if record is not None:
+            self.status(f"External controller · {record.external_name}" if record.external_name else "")
 
     @on(DataTable.RowSelected)
     def open_telemetry(self) -> None:
@@ -110,6 +120,9 @@ class ManagerScreen(Page):
     def action_verify(self) -> None:
         record = self.selected()
         if record is None:
+            return
+        if record.external_reference:
+            self.status("PFCR replay requires a recorded PFCR policy. Press Enter for external-reference telemetry.")
             return
         if self.project.build.rail_replay is None:
             self.status("rail_replay is not built")

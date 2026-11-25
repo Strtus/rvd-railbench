@@ -5,7 +5,42 @@
 #include <stdexcept>
 
 #include "rvd/runtime.hpp"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace rvd {
+namespace {
+std::string external_cli_name(std::string name) {
+#ifdef _WIN32
+  // A narrow Windows main() receives arguments in the system code page. Metadata is UTF-8.
+  if (!name.empty()) {
+    const auto fail = [] { return std::invalid_argument("cannot encode the external name as UTF-8"); };
+    const auto bytes = static_cast<int>(name.size());
+    const int length = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, name.data(), bytes, nullptr, 0);
+    if (length <= 0) throw fail();
+    std::wstring wide(static_cast<std::size_t>(length), L'\0');
+    if (MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, name.data(), bytes, wide.data(), length) != length)
+      throw fail();
+    const int utf8_length =
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), length, nullptr, 0, nullptr, nullptr);
+    if (utf8_length <= 0) throw fail();
+    name.resize(static_cast<std::size_t>(utf8_length));
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), length, name.data(), utf8_length,
+                            nullptr, nullptr) != utf8_length)
+      throw fail();
+  }
+#endif
+  return name;
+}
+}  // namespace
 std::string find_model_dir(const std::string& model_id) {
   for (const char* up : {"", "../", "../../", "../../../"}) {
     for (const char* root : {"policies/", "model/"}) {
@@ -17,6 +52,7 @@ std::string find_model_dir(const std::string& model_id) {
 }
 Options parse_options(int argc, char** argv) {
   Options opt;
+  bool log_requested = false, external_name_requested = false;
   // Config files are applied in order; explicit CLI values always win.
   for (int i = 1; i < argc; ++i) {
     if (std::string(argv[i]) == "--config") {
@@ -67,13 +103,20 @@ Options parse_options(int argc, char** argv) {
       opt.sim_trace = next(i);
     else if (a == "--bridge")
       opt.bridge_port = integer(i);
-    else if (a == "--sim-repeat-pose-at")
+    else if (a == "--external-port") {
+      opt.external_port = integer(i);
+      if (opt.external_port <= 0) throw std::invalid_argument("external port must be 1..65535");
+    } else if (a == "--external-name") {
+      opt.external_name = external_cli_name(next(i));
+      external_name_requested = true;
+    } else if (a == "--sim-repeat-pose-at")
       opt.sim_repeat_pose_at = integer(i);
     else if (a == "--model-dir")
       opt.model_dir = next(i);
-    else if (a == "--log")
+    else if (a == "--log") {
       opt.log = next(i);
-    else if (a == "--experiment-dir")
+      log_requested = true;
+    } else if (a == "--experiment-dir")
       opt.experiment_dir = next(i);
     else if (a == "--noise")
       opt.noise = number(i);
@@ -99,15 +142,21 @@ Options parse_options(int argc, char** argv) {
           "  [--command-mode arrive|lead] [--max-steps N] [--model-dir DIR] [--log FILE]\n"
           "  [--experiment-dir NEW_DIR] [--noise M] [--start X Y Z] [--sim-latency S] [--sim-freeze-at K]\n"
           "  [--sim-repeat-pose-at K] [--sim-fail-read-at K] [--sim-fail-send-at K] [--seed UINT32]\n"
-          "  [--sim-trace FILE] [--bridge PORT]");
+          "  [--sim-trace FILE] [--bridge PORT] [--external-port PORT [--external-name NAME]]");
       throw std::invalid_argument("help");
     } else
       throw std::invalid_argument("unknown argument: " + a);
   }
   // Compatibility with the original default model directory after reorganization.
-  const std::string legacy = "model/" + opt.rail.model_id;
-  if (opt.model_dir.empty() || (opt.model_dir == legacy && !std::filesystem::exists(legacy)))
-    opt.model_dir = find_model_dir(opt.rail.model_id);
+  if (opt.external_port > 0) {
+    if (!log_requested) opt.log.clear();
+    if (!opt.model_dir.empty()) throw std::invalid_argument("--model-dir applies only to PFCR mode");
+  } else {
+    if (external_name_requested) throw std::invalid_argument("--external-name requires --external-port");
+    const std::string legacy = "model/" + opt.rail.model_id;
+    if (opt.model_dir.empty() || (opt.model_dir == legacy && !std::filesystem::exists(legacy)))
+      opt.model_dir = find_model_dir(opt.rail.model_id);
+  }
   validate(opt);
   return opt;
 }

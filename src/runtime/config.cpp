@@ -118,9 +118,10 @@ void load_config(const std::string& path, Options& o) {
         triple(val, c.scale);
       else if (key == "mapping.target_m")
         triple(val, c.target_rail);
-      else if (key == "controller.type")
-        require(val == "pfcr-dqp", "unsupported controller");
-      else if (key == "controller.model_id") {
+      else if (key == "controller.type") {
+        require(val == "pfcr-dqp" || val == "external-reference", "unsupported controller");
+        o.external_config = val == "external-reference";
+      } else if (key == "controller.model_id") {
         require(pfcr::find_model(val) != nullptr, "incompatible policy artifact");
         c.model_id = val;
       } else if (key == "controller.period_s")
@@ -230,6 +231,19 @@ void validate(const Options& o) {
   require(o.sim_trace.empty() || o.bounded, "plant trace requires bounded or PLC simulation");
   require(o.bridge_port >= 0 && o.bridge_port <= 65535, "bridge port must be 0..65535");
   require(o.bridge_port == 0 || !o.fast, "a bridged rail runs in real time; drop --fast");
+  require(o.external_port >= 0 && o.external_port <= 65535, "external port must be 0..65535");
+  require(!o.external_config || o.external_port > 0,
+          "external-reference configuration requires --external-port");
+  if (o.external_port > 0) {
+    require(o.external_port != o.bridge_port, "external and rail bridge ports must differ");
+    require(!o.fast && !o.open_loop && !o.onnx && o.rail.command_mode == CommandMode::Arrive,
+            "external references require real time, closed loop, and arrive mode; ONNX applies only to PFCR");
+    require(!o.rail.compensate_latency, "external references require uncompensated measurements");
+    require(!o.external_name.empty() && o.external_name.size() <= 80 &&
+                std::all_of(o.external_name.begin(), o.external_name.end(),
+                            [](unsigned char c) { return c >= 32 && c != 127; }),
+            "external name must be 1..80 bytes without control characters");
+  }
   for (double a : o.plc_accel)
     require(std::isfinite(a) && a > 0, "PLC acceleration must be finite and positive");
   require(std::isfinite(o.plc_delay) && o.plc_delay >= 0 && o.plc_delay < o.rail.period_s,
@@ -237,8 +251,9 @@ void validate(const Options& o) {
   const auto start = FrameMap{o.rail}.hill_to_rail(o.start_hill);
   for (int i = 0; i < 3; ++i) {
     require(std::isfinite(o.start_hill[i]) && std::isfinite(o.sim_bias[i]), "nonfinite simulation input");
-    require(std::isfinite(start[i]) && start[i] >= o.rail.rail_min[i] && start[i] <= o.rail.rail_max[i],
-            "start outside rail limits");
+    if (o.external_port == 0 || o.bridge_port == 0)
+      require(std::isfinite(start[i]) && start[i] >= o.rail.rail_min[i] && start[i] <= o.rail.rail_max[i],
+              "start outside rail limits");
   }
 }
 std::string configuration_snapshot(const Options& o) {
@@ -266,9 +281,13 @@ std::string configuration_snapshot(const Options& o) {
   triple_out("sign", c.sign);
   triple_out("scale", c.scale);
   triple_out("target_m", c.target_rail);
-  s << "[controller]\ntype = pfcr-dqp\nmodel_id = " << c.model_id << "\nperiod_s = " << c.period_s
-    << "\nbackend = " << (o.onnx ? "onnx" : "builtin") << "\nood_warn_z = " << c.ood_warn_z
-    << "\n[simulation]\nmode = " << (o.plc ? "plc" : (o.bounded ? "bounded" : "ideal"))
+  if (o.external_port > 0) {
+    s << "[controller]\ntype = external-reference\nperiod_s = " << c.period_s;
+  } else {
+    s << "[controller]\ntype = pfcr-dqp\nmodel_id = " << c.model_id << "\nperiod_s = " << c.period_s
+      << "\nbackend = " << (o.onnx ? "onnx" : "builtin") << "\nood_warn_z = " << c.ood_warn_z;
+  }
+  s << "\n[simulation]\nmode = " << (o.plc ? "plc" : (o.bounded ? "bounded" : "ideal"))
     << "\nseed = " << o.seed << "\nnoise_m = " << o.noise << "\nlatency_s = " << o.sim_latency
     << "\nfreeze_at = " << o.sim_freeze_at << "\nrepeat_pose_at = " << o.sim_repeat_pose_at
     << "\nfail_read_at = " << o.sim_fail_read_at << "\nfail_send_at = " << o.sim_fail_send_at

@@ -12,6 +12,11 @@ struct FrameMap {
       h[j] = c.sign[j] * (rail[c.rail_axis[j]] - c.target_rail[c.rail_axis[j]]) / c.scale[j];
     return h;
   }
+  Vec3 hill_velocity_to_rail(const Vec3& hill) const {
+    Vec3 r{};
+    for (int j = 0; j < 3; ++j) r[c.rail_axis[j]] = c.sign[j] * c.scale[j] * hill[j];
+    return r;
+  }
   Vec3 hill_to_rail(const Vec3& hill) const {
     Vec3 r{};
     for (int j = 0; j < 3; ++j)

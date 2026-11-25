@@ -198,6 +198,7 @@ class Node:
             "lease_ttl_s": s.lease_ttl_s,
             "period_s": [s.min_period_s, s.max_period_s],
             "max_timeout_s": s.max_timeout_s,
+            "setpoint_watchdog_deadline": True,
             "horizon_s": s.horizon_s,
             "task": {"lead_s": s.task_lead_s, "refresh_s": s.task_refresh_s, "max_points": MAX_WAYPOINTS},
             "sensors": ["encoders"] + (["mocap"] if self.mocap else []),
@@ -396,6 +397,10 @@ class Node:
             deadline = _number(data.get("deadline"), "deadline")
             if not now < deadline <= now + lease["timeout_s"]:
                 raise Rejected("deadline has passed or exceeds the negotiated timeout", 409)
+            watchdog = _number(data.get("watchdog_deadline", deadline), "watchdog_deadline")
+            if not deadline <= watchdog <= now + lease["timeout_s"]:
+                raise Rejected("watchdog_deadline must be at or after the deadline and within the lease timeout",
+                               409)
             if "sample_time" in data:
                 age = now - _number(data["sample_time"], "sample_time")
                 if not 0 <= age <= self.settings.max_observation_age_s:
@@ -404,7 +409,7 @@ class Node:
             self.last_seq = seq
             if self._setpoint_req:
                 self._setpoint_req.finish(error=Rejected("superseded by a newer setpoint", 409))
-            request = self._setpoint_req = _Request((seq, targets, speeds, deadline, now))
+            request = self._setpoint_req = _Request((seq, targets, speeds, deadline, watchdog, now))
             self._wake.notify_all()
         return self._await(request, max(0.0, deadline - self.clock()) + 0.5)
 
@@ -763,7 +768,7 @@ class Node:
             request, self._setpoint_req = self._setpoint_req, None
             if request is None:
                 return
-            seq, targets, speeds, deadline, received = request.payload
+            seq, targets, speeds, deadline, watchdog, received = request.payload
             lease = self.lease
             if lease is None or self.fault:
                 request.finish(error=Rejected("control was revoked", 409))
@@ -780,7 +785,7 @@ class Node:
             return
         with self.lock:
             if self.lease is lease:
-                self.stream_deadline = deadline
+                self.stream_deadline = watchdog
             self.reason = "stream"
         request.finish({"accepted_seq": seq, "t_received": received, "t_applied": applied, "server_time": applied})
 

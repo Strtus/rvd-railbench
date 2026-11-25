@@ -30,8 +30,11 @@ struct Options {
   int sim_repeat_pose_at = -1;  // motion capture repeats the last pose with fresh stamps
   bool sim_encoder = true;      // report axis encoder positions alongside motion capture
   Vec3 sim_bias{};
-  std::string sim_trace;  // optional plant trace CSV (bounded and PLC modes)
-  int bridge_port = 0;    // rail I/O relayed by RVDLAB on this loopback port instead of the simulator
+  std::string sim_trace;         // optional plant trace CSV (bounded and PLC modes)
+  int bridge_port = 0;           // rail I/O relayed by RVDLAB on this loopback port instead of the simulator
+  bool external_config = false;  // the loaded controller section requires an external peer
+  int external_port = 0;         // loopback endpoint for a separate reference controller
+  std::string external_name = "external-reference";
   std::string experiment_dir;
   std::vector<std::string> config_files;
   std::string log = "pfcr_rail_log.csv";
@@ -42,5 +45,6 @@ void validate(const Options& options);
 std::string configuration_snapshot(const Options& options);
 Options parse_options(int argc, char** argv);
 int run(const Options& opt);
+int run_external(const Options& opt);
 
 }  // namespace rvd

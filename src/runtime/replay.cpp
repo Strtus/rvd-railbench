@@ -45,16 +45,24 @@ ReplaySummary replay(const std::string& directory, const std::string& model) {
         sha256_file(directory + "/" + name) != checksum_line.substr(0, 64))
       throw std::runtime_error("experiment integrity mismatch: " + name);
   }
-  if (checks.bad() || !verified.count("configuration.ini") || !verified.count("initial_state.csv") ||
-      !verified.count("controller.csv") || !verified.count("summary.json"))
+  if (checks.bad() || !verified.count("configuration.ini") || !verified.count("controller.csv") ||
+      !verified.count("summary.json"))
     throw std::runtime_error("incomplete experiment checksums");
+  std::ifstream inputs(directory + "/controller.csv");
+  if (!inputs) throw std::runtime_error("incomplete experiment inputs");
+  std::string controller_header;
+  std::getline(inputs, controller_header);
+  if (!controller_header.empty() && controller_header.back() == '\r') controller_header.pop_back();
+  if (controller_header == kExternalControllerColumns)
+    throw std::runtime_error("PFCR replay is not available for external-reference experiments");
+  if (!verified.count("initial_state.csv")) throw std::runtime_error("incomplete experiment checksums");
   Options options;
   load_config(directory + "/configuration.ini", options);
   validate(options);
   PfcrAdapter controller(options.rail);
   controller.initialize({model.empty() ? find_model_dir(options.rail.model_id) : model, options.onnx});
-  std::ifstream initial(directory + "/initial_state.csv"), inputs(directory + "/controller.csv");
-  if (!initial || !inputs) throw std::runtime_error("incomplete experiment inputs");
+  std::ifstream initial(directory + "/initial_state.csv");
+  if (!initial) throw std::runtime_error("incomplete experiment inputs");
   std::string line;
   std::getline(initial, line);
   if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -65,9 +73,7 @@ ReplaySummary replay(const std::string& directory, const std::string& model) {
   StateEstimate state;
   for (int i = 0; i < 6; ++i) state.state[i] = num(init[i]);
   controller.reset(state);
-  std::getline(inputs, line);
-  if (!line.empty() && line.back() == '\r') line.pop_back();
-  if (line != "k,t_acquired,hx,hy,hz,a0,a1,a2,n0,n1,n2,n3,n4,n5,backup,intervened,status,reason")
+  if (controller_header != "k,t_acquired,hx,hy,hz,a0,a1,a2,n0,n1,n2,n3,n4,n5,backup,intervened,status,reason")
     throw std::runtime_error("unsupported replay schema");
   ReplaySummary summary;
   bool complete = false;
