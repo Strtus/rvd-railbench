@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
 #endif
   try {
     const auto opt = rvd::parse_options(argc, argv);
-    return rvd::run(opt);
+    return opt.external_port > 0 ? rvd::run_external(opt) : rvd::run(opt);
   } catch (const std::exception& e) {
     if (std::string(e.what()) == "help") return 0;
     std::fprintf(stderr, "fatal: %s\n", e.what());

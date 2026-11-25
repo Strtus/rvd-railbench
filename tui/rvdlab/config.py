@@ -8,6 +8,7 @@ from pathlib import Path
 
 Vec3 = tuple[float, float, float]
 MODEL_ID = "IDSS_PFCR-DQP_s49_step10240000"
+EXTERNAL_CONTROLLER = "external-reference"
 # Checkpoints rail_main is built for (include/pfcr/pfcr_models.hpp); the first is the default.
 MODEL_IDS = (MODEL_ID, "E_PFCR-DQP_s41_step5120000")
 DEFAULT_FILES = ("configs/rail.ini", "configs/pfcr_dqp.ini", "configs/simulation.ini")
@@ -147,7 +148,7 @@ _SIM_TRIPLES = {"simulation.bias_m": "bias_m", "simulation.start_hill_m": "start
                 "simulation.plc_acceleration_m_s2": "plc_acceleration_m_s2"}
 
 
-def _apply(profile: Profile, key: str, value: str) -> None:
+def _apply(profile: Profile, key: str, value: str, *, snapshot: bool) -> None:
     rail, ctrl, sim = profile.rail, profile.controller, profile.simulation
     if key in _RAIL_TRIPLES:
         setattr(rail, _RAIL_TRIPLES[key], _triple(value))
@@ -165,9 +166,11 @@ def _apply(profile: Profile, key: str, value: str) -> None:
             raise ConfigError("axis must be 0, 1 or 2")
         rail.axis = (int(axes[0]), int(axes[1]), int(axes[2]))
     elif key == "controller.type":
-        if value != "pfcr-dqp":
+        if value != "pfcr-dqp" and not (snapshot and value == EXTERNAL_CONTROLLER):
             raise ConfigError("unsupported controller")
         ctrl.type = value
+        if value == EXTERNAL_CONTROLLER:
+            ctrl.backend, ctrl.model_id = "external", ""
     elif key == "controller.model_id":
         if value not in MODEL_IDS:
             raise ConfigError("incompatible policy artifact")
@@ -201,7 +204,7 @@ def _apply(profile: Profile, key: str, value: str) -> None:
         raise ConfigError(f"unknown or immutable configuration key: {key}")
 
 
-def apply_file(profile: Profile, path: Path) -> None:
+def apply_file(profile: Profile, path: Path, *, snapshot: bool = False) -> None:
     seen: set[str] = set()
     section = ""
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -223,7 +226,7 @@ def apply_file(profile: Profile, path: Path) -> None:
             if key in seen:
                 raise ConfigError("duplicate configuration key")
             seen.add(key)
-            _apply(profile, key, value)
+            _apply(profile, key, value, snapshot=snapshot)
         except ConfigError as error:
             raise ConfigError(f"{path}:{lineno}: {error}") from None
     profile.files.append(path)
@@ -264,7 +267,7 @@ def read_snapshot(path: Path) -> Profile | None:
     """Profile from an experiment's configuration.ini, or None when unreadable."""
     profile = Profile()
     try:
-        apply_file(profile, path)
+        apply_file(profile, path, snapshot=True)
     except (ConfigError, OSError):
         return None
     return profile

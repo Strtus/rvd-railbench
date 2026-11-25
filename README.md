@@ -24,6 +24,7 @@ The source is maintained in **RVD-RailBench** (`rvd-railbench`). The included PF
 ## What you can do
 
 - **Develop without a rig.** Run local simulations with ideal, bounded-motion, or PLC-style plant models, configurable noise and delay, and fault injection.
+- **Drive a run from Simulink.** Stream position and velocity references through the external control mode, with the runtime handling rail mapping, motion supervision, and experiment records. See [the simulated example](docs/external-control.md).
 - **Operate a shared testbed.** Use an authenticated hardware node to manage device access, stream controller targets, and execute waypoint tasks.
 - **Run experiments from the terminal.** Configure rail geometry and coordinate mapping, position the platform, launch rendezvous runs, and inspect telemetry in RVDLAB. The rendezvous interface shows signed X/Y/Z components of the Hill model velocity, plus rail encoder and relative motion-capture velocities when sensor data is available.
 - **Keep an inspectable experiment record.** Save resolved settings, controller inputs, trajectories, events, model hashes, and build metadata; verify recorded controller behavior offline.

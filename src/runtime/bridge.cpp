@@ -2,8 +2,13 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
+
+#include "rvd/external_peer.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -59,8 +64,12 @@ void report(const std::string& reply) {
 }
 }  // namespace
 
-BridgeRailIO::BridgeRailIO(int port) {
+BridgeRailIO::BridgeRailIO(int port, double external_timeout_s) : external_timeout_s_(external_timeout_s) {
   if (port <= 0 || port > 65535) throw std::invalid_argument("bridge port must be 1..65535");
+  if (external_timeout_s_ > 0) {
+    external_peer_ = std::make_unique<ExternalPeer>(port);
+    return;
+  }
 #ifdef _WIN32
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) throw std::runtime_error("cannot start Winsock");
@@ -105,7 +114,11 @@ void BridgeRailIO::disconnect() noexcept {
   winsock_ = false;
 }
 
-bool BridgeRailIO::exchange(const std::string& request, std::string& reply) {
+bool BridgeRailIO::exchange(const std::string& request, std::string& reply, double due) {
+  if (external_peer_) {
+    const double limit = now_s() + external_timeout_s_;
+    return external_peer_->exchange(request, reply, at(has(due) ? std::min(due, limit) : limit));
+  }
   if (!connected_) return false;
   const Native s = static_cast<Native>(socket_);
   const std::string line = request + "\n";
@@ -146,6 +159,10 @@ bool BridgeRailIO::read_measurement(Measurement& m) {
   double v[10] = {};
   bool ok = words.size() == 11 && words[0] == "POS";
   for (int i = 0; ok && i < 10; ++i) ok = number(words[static_cast<std::size_t>(i) + 1], v[i]);
+  if (ok && external_peer_) {
+    ok = std::all_of(std::begin(v), std::end(v), has) && v[6] >= 0 && v[7] >= 0 && v[8] >= 0 &&
+         v[8] <= 9007199254740991.0 && std::trunc(v[8]) == v[8] && (v[9] == 0 || v[9] == 1);
+  }
   if (!ok) {
     report(reply);
     return false;
@@ -161,6 +178,7 @@ bool BridgeRailIO::read_measurement(Measurement& m) {
   m.timestamp_uncertainty_s = v[7];
   m.synchronization = Synchronization::Estimated;
   m.frame_id = static_cast<long long>(v[8]);
+  external_sample_upper_s_ = m.t_acquired + m.timestamp_uncertainty_s;
   return true;
 }
 
@@ -171,7 +189,19 @@ bool BridgeRailIO::send_target(const Command& c, CommandAck& ack) {
                 c.rail_velocity[2]);
   ack.t_sent = now_s();
   std::string reply;
-  if (!exchange(line, reply)) return false;
+  if (external_peer_) {
+    const double observation_budget = c.t_arrive - external_sample_upper_s_;
+    if (!has(observation_budget) || observation_budget <= 0) return false;
+    std::ostringstream request;
+    request.imbue(std::locale::classic());
+    request << std::setprecision(17) << "SEND_UNTIL " << c.k;
+    for (double v : c.rail_target) request << ' ' << v;
+    for (double v : c.rail_velocity) request << ' ' << v;
+    request << ' ' << observation_budget;
+    if (!exchange(request.str(), reply, c.t_arrive)) return false;
+  } else if (!exchange(line, reply)) {
+    return false;
+  }
   const auto words = split(reply);
   double flag = 0;
   if (words.size() != 2 || words[0] != "ACK" || !number(words[1], flag)) {

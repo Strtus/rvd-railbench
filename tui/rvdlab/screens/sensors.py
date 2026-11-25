@@ -10,10 +10,10 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Footer, Input, Sparkline, Static
 
-from ..config import read_snapshot
+from ..config import EXTERNAL_CONTROLLER, read_snapshot
 from ..experiments import list_experiments
 from ..plot import VelocitySparkline
-from ..telemetry import Series, load, num, resolve_csv, summarize
+from ..telemetry import EncoderSpeed, Series, load, num, resolve_csv, summarize
 from .base import DIM, Page, kv_table, section
 
 SPARKS = (
@@ -27,6 +27,10 @@ SPARKS = (
 
 class SensorsScreen(Page):
     TITLE_TEXT = "Sensor & Telemetry"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.path: Path | None = None
 
     def compose(self) -> ComposeResult:
         yield from self.compose_title()
@@ -45,15 +49,12 @@ class SensorsScreen(Page):
                     yield (VelocitySparkline if key == "speed" else Sparkline)([], id=f"spark-{key}")
         yield Footer()
 
-    def on_mount(self) -> None:
-        self.path: Path | None = None
-
     def on_screen_resume(self) -> None:
+        self.query_one("#source", Input).value = str(self.path) if self.path else ""
         self.load(self.path)
 
     def show(self, path: Path | None) -> None:
         self.path = path
-        self.query_one("#source", Input).value = str(path) if path else ""
 
     @on(Button.Pressed, "#open")
     @on(Input.Submitted, "#source")
@@ -67,10 +68,14 @@ class SensorsScreen(Page):
         self.query_one("#summary", Static).update("")
         for key, label in SPARKS:
             if key == "speed":
-                self.query_one("#spark-speed", VelocitySparkline).set_velocity([])
+                spark = self.query_one("#spark-speed", VelocitySparkline)
+                spark.set_velocity([])
+                spark.tooltip = None
             else:
                 self.query_one(f"#spark-{key}", Sparkline).data = []
             self.query_one(f"#label-{key}", Static).update(label)
+        self.query_one("#label-sigma", Static).display = True
+        self.query_one("#spark-sigma", Sparkline).display = True
 
     def load(self, path: Path | None) -> None:
         p = self.project
@@ -88,6 +93,7 @@ class SensorsScreen(Page):
             self.empty(f"cannot read {csv_path}: {error}")
             return
         snapshot = read_snapshot(csv_path.parent / "configuration.ini")
+        external = snapshot is not None and snapshot.controller.type == EXTERNAL_CONTROLLER
         if snapshot is not None:
             rail, ood, limits = snapshot.rail, snapshot.controller.ood_warn_z, "limits from the run's configuration.ini"
         else:
@@ -106,16 +112,29 @@ class SensorsScreen(Page):
         series = Series()
         series.extend(trajectory.rows)
         run = trajectory.run_rows
+        velocity = series.velocity
+        if external:
+            encoder = EncoderSpeed()
+            velocity = []
+            for row in trajectory.rows:
+                encoder.extend([row])
+                if encoder.components is not None:
+                    velocity.append(encoder.components)
+        self.query_one("#label-sigma", Static).display = not external
+        self.query_one("#spark-sigma", Sparkline).display = not external
         data = {
             "distance": series.distance,
-            "track": [v * 1e3 for r in run if (v := num(r, "track_err_m")) is not None],
+            "track": [v * 1e3 for v in trajectory.tracking_errors],
             "age": [abs(v) * 1e3 for r in run if (v := num(r, "meas_age_s")) is not None],
             "sigma": [v for r in run if (v := num(r, "obs_max_z")) is not None],
         }
         for key, label in SPARKS:
             if key == "speed":
-                self.query_one("#spark-speed", VelocitySparkline).set_velocity(series.velocity)
-                self.query_one("#label-speed", Static).update(label)
+                frame = "Rail encoder" if external else "Hill"
+                spark = self.query_one("#spark-speed", VelocitySparkline)
+                spark.set_velocity(velocity)
+                spark.tooltip = f"{frame} velocity X / Y / Z in m/s. Each row has its own scale."
+                self.query_one("#label-speed", Static).update(f"{frame} velocity XYZ [m/s]")
                 continue
             values = data[key]
             self.query_one(f"#spark-{key}", Sparkline).data = values

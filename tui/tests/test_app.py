@@ -3,9 +3,10 @@ import json
 
 import pytest
 from rich.console import Console
-from textual.widgets import Input, Select, Static
+from textual.widgets import DataTable, Input, Select, Sparkline, Static
 
 from rvdlab.app import RvdLabApp
+from rvdlab.plot import VelocitySparkline
 from rvdlab.profiles import read_active
 from rvdlab.project import find_build
 
@@ -63,6 +64,43 @@ async def test_menu_commands_open_each_page_and_escape_returns(tmp_path, profile
         await pilot.press("down", "enter")
         await pilot.pause()
         assert type(app.screen).__name__ == "OverviewScreen"
+
+
+async def test_manager_opens_external_run_telemetry_on_first_visit(tmp_path, profiles):
+    experiments = tmp_path / "experiments"
+    run = experiments / "external-run"
+    run.mkdir(parents=True)
+    (run / "metadata.json").write_text(json.dumps({
+        "controller": "external-reference", "external_name": "CWH-demo", "hardware": False,
+    }), encoding="utf-8")
+    (run / "configuration.ini").write_text(
+        "[rail]\ntracking_error_m = 0.003\n[controller]\ntype = external-reference\n[simulation]\nmode = plc\n",
+        encoding="utf-8")
+    (run / "trajectory.csv").write_text(
+        "k,status,reason,hx,hy,hz,enc_x,enc_y,enc_z,t_encoder,frame_id,track_err_m\n"
+        "0,RUN,,0.5,0,0,0.5,0,0,0,1,0.0007\n"
+        "1,ABORT,RAIL_TRACKING_ERROR,0.501,0,0,0.501,0,0,1,2,0.0035\n",
+        encoding="utf-8")
+    app = RvdLabApp(root=ROOT, experiments=experiments, profiles=profiles, node=tmp_path / "unused-node.json")
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.press("5", "enter")
+        await pilot.pause()
+        manager = app.screen
+        assert "external / plc" in manager.query_one(DataTable).get_row(run.name)
+        assert "CWH-demo" in text(manager.query_one("#manager-status", Static))
+        await pilot.press("v")
+        await pilot.pause()
+        assert "PFCR replay requires" in text(manager.query_one("#manager-status", Static))
+        await pilot.press("enter")
+        await pilot.pause()
+        sensors = app.screen
+        assert sensors.query_one("#source", Input).value == str(run)
+        assert "limits from the run" in text(sensors.query_one("#source-info", Static))
+        summary = text(sensors.query_one("#summary", Static))
+        assert "3.5 mm max" in summary
+        assert "Safety interventions" not in summary
+        assert sensors.query_one("#spark-track", Sparkline).data == pytest.approx([0.7, 3.5])
+        assert sensors.query_one("#spark-speed", VelocitySparkline).samples[0] == pytest.approx((.001, 0, 0))
 
 
 async def test_unknown_command_is_reported(tmp_path, profiles):
