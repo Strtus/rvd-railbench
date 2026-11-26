@@ -24,6 +24,12 @@ the node's TLS identity. `rvdlab --check` checks the installation and runs a
 short simulation; it does not probe hardware. `rvdlab --version` reports the
 interface and runtime versions.
 
+For a pip-installed release, run `rvdlab update` to upgrade it in the same Python
+environment. On Windows, close other RVDLAB sessions and keep the terminal open
+while the update finishes after the launcher exits. For scripts that need the
+pip exit code, run `python -m rvdlab update` with the installation's Python.
+Use your installer to update managed tools and Git to update source checkouts.
+
 The first interactive launch opens with only the Braille orbital animation.
 The outline appears over 3 seconds, followed by 2.5 seconds of full-size orbital
 motion. The comet uses Kepler's equation to move faster near the focus and slower

@@ -28,9 +28,14 @@ def main(argv: list[str] | None = None) -> int:
         from .external import main as external_main
 
         return external_main(argv[1:])
+    if argv[:1] == ["update"]:
+        from .update import main as update_main
+
+        return update_main(argv[1:])
 
     parser = argparse.ArgumentParser(prog="rvdlab", description="Terminal interface for RVD-RailBench",
-                                     epilog="Run 'rvdlab external --help' to connect an external controller.")
+                                     epilog="Use 'rvdlab update' to upgrade a pip installation, or "
+                                            "'rvdlab external --help' to connect an external controller.")
     parser.add_argument("--root", type=Path, help="RVD-RailBench installation or checkout (default: detected)")
     parser.add_argument("--config", type=Path, action="append",
                         help="rail_main configuration file, applied in order; replaces configs/*.ini")

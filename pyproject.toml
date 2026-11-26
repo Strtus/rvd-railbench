@@ -68,4 +68,4 @@ cmake.define.CMAKE_EXE_LINKER_FLAGS = "-static-libstdc++ -static-libgcc"
 build = "cp312-*"  # the wheel is py3-none-<platform>; one build per platform
 archs = ["auto64"]
 skip = "*-musllinux_*"
-test-command = "rvdlab --check && rail-node --version"
+test-command = "rvdlab --check && rvdlab update --help && rail-node --version"
