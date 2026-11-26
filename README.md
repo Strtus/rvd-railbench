@@ -44,6 +44,8 @@ rvdlab
 
 `rvdlab --check` runs a short local simulation without probing hardware. The package includes the C++ runtime binaries, the reference policy, default configurations, the terminal interface, and `rail-node`. The `node` extra supplies the cryptography dependency used for the node's TLS identity.
 
+Run `rvdlab update` to upgrade a pip-installed release in its current Python environment.
+
 In the interface, configure a rail profile in **Rail Setup**, then choose a local simulation in **Autonomous Rendezvous**. A physical platform is optional for this workflow.
 
 The GitHub `main` branch can include changes not yet available on PyPI; use a source checkout for unreleased changes. Available installation and build options are documented in the [development guide](https://github.com/Strtus/rvd-railbench/blob/main/docs/development.md).
